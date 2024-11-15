@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 class WebViewExample extends StatefulWidget {
   const WebViewExample({super.key});
@@ -41,8 +42,17 @@ class _WebViewExampleState extends State<WebViewExample> {
           // }
           return NavigationDecision.navigate;
         },
-      ))
-      ..loadRequest(Uri.parse("https://airplay-tv.pages.dev/#/video/qr"));
+      ));
+
+    // #docregion platform_features
+    if (_controller.platform is AndroidWebViewController) {
+      AndroidWebViewController.enableDebugging(true);
+      (_controller.platform as AndroidWebViewController)
+          .setMediaPlaybackRequiresUserGesture(false);
+    }
+
+    _controller.loadRequest(Uri.parse(
+        "https://airplay-tv.pages.dev/#/video/qr?_from=tv&_platform=flutter"));
   }
 
   @override
