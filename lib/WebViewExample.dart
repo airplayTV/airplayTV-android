@@ -52,7 +52,7 @@ class _WebViewExampleState extends State<WebViewExample> {
     }
 
     _controller.loadRequest(Uri.parse(
-        "https://airplay-tv.pages.dev/#/video/qr?_from=tv&_platform=flutter"));
+        "https://airplay.artools.cc/qr?_from=tv&_platform=flutter"));
   }
 
   @override
