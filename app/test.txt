@@ -1,2 +1,0 @@
-namespace = "com.airplay.tv"
-jvmTarget = "17"

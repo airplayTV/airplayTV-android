@@ -3,3 +3,14 @@
 build 
 local.properties 
 *.iml
+
+*.bak
+.codex/
+build_output.txt
+build/
+
+test.txt
+build_output.txt
+*.bak
+.codex/
+.idea/workspace.xml
