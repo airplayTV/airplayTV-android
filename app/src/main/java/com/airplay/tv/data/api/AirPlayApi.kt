@@ -7,7 +7,7 @@ import retrofit2.http.Body
 
 interface AirPlayApi {
     @GET("/api/video/provider")
-    suspend fun getSourceList(): ApiResponse<List<Source>>
+    suspend fun getSourceList(@Query("_source") source: String = ""): ApiResponse<List<Source>>
 
     @GET("/api/video/list")
     suspend fun getVideoList(
