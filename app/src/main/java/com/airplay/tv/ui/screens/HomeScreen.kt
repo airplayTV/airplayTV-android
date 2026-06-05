@@ -21,6 +21,7 @@ import com.airplay.tv.data.repository.VideoRepository
 import com.airplay.tv.ui.components.TopBar
 import com.airplay.tv.ui.components.TagRow
 import com.airplay.tv.ui.components.VideoCard
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
@@ -54,18 +55,22 @@ fun HomeScreen(
 
     LaunchedEffect(Unit) {
         sources = repo.getSourceList()
-        prefs.source.collect { s ->
-            if (s.isNotEmpty()) {
-                currentSource = s
-                val src = sources.find { it.name == s }
-                tags = src?.tags ?: emptyList()
-                if (tags.isNotEmpty()) {
-                    prefs.tag.collect { t ->
-                        currentTag = if (t.isEmpty()) tags[0].value else t
-                        loadVideos()
-                    }
-                }
-            }
+        if (sources.isEmpty()) { loading = false; return@LaunchedEffect }
+        
+        val savedSource = prefs.source.first()
+        currentSource = if (savedSource.isNotEmpty() && sources.any { it.name == savedSource })
+            savedSource else sources[0].name
+        
+        val src = sources.find { it.name == currentSource }
+        tags = src?.tags ?: emptyList()
+        
+        if (tags.isNotEmpty()) {
+            val savedTag = prefs.tag.first()
+            currentTag = if (savedTag.isNotEmpty() && tags.any { it.value == savedTag })
+                savedTag else tags[0].value
+            loadVideos()
+        } else {
+            loading = false
         }
     }
 
