@@ -5,11 +5,5 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
-dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
 rootProject.name = "AirPlayTV"
 include(":app")
