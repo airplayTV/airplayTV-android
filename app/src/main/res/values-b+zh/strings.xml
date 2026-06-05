@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirPlay TV</string>
+    <string name="search">搜索</string>
+    <string name="settings">设置</string>
+    <string name="play">播放</string>
+    <string name="pause">暂停</string>
+    <string name="next_episode">下一集</string>
+    <string name="prev_episode">上一集</string>
+    <string name="switch_source">切换源</string>
+    <string name="redeem_code">兑换码</string>
+    <string name="account">账号</string>
+    <string name="clear_cache">清除缓存</string>
+    <string name="history">播放历史</string>
+    <string name="loading">加载中...</string>
+    <string name="retry">重试</string>
+    <string name="about">关于</string>
+</resources>
