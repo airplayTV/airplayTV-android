@@ -96,10 +96,10 @@ fun HomeScreen(
         }
         item { Spacer(Modifier.height(8.dp)) }
         if (loading) {
-            item { Text("???...", color = Color.Gray, fontSize = 16.sp,
+            item { Text("加载中...", color = Color.Gray, fontSize = 16.sp,
                 modifier = Modifier.padding(20.dp)) }
         } else if (videos.isEmpty()) {
-            item { Text("????", color = Color.Gray, fontSize = 16.sp,
+            item { Text("暂无数据", color = Color.Gray, fontSize = 16.sp,
                 modifier = Modifier.padding(20.dp)) }
         } else {
             item {
