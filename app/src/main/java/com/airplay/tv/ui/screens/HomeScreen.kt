@@ -54,26 +54,25 @@ fun HomeScreen(
     }
 
     LaunchedEffect(Unit) {
-        sources = repo.getSourceList()
-        if (sources.isEmpty()) { loading = false; return@LaunchedEffect }
-        
-        val savedSource = prefs.source.first()
-        currentSource = if (savedSource.isNotEmpty() && sources.any { it.name == savedSource })
-            savedSource else sources[0].name
-        
-        val src = sources.find { it.name == currentSource }
-        tags = src?.tags ?: emptyList()
-        
-        if (tags.isNotEmpty()) {
-            val savedTag = prefs.tag.first()
-            currentTag = if (savedTag.isNotEmpty() && tags.any { it.value == savedTag })
-                savedTag else tags[0].value
-            loadVideos()
-        } else {
+        try {
+            sources = repo.getSourceList()
+            if (sources.isEmpty()) { loading = false; return@LaunchedEffect }
+            val savedSource = try { prefs.source.first() } catch (e: Exception) { "" }
+            currentSource = if (savedSource.isNotEmpty() && sources.any { it.name == savedSource }) savedSource else sources[0].name
+            val src = sources.find { it.name == currentSource }
+            tags = src?.tags ?: emptyList()
+            if (tags.isNotEmpty()) {
+                val savedTag = try { prefs.tag.first() } catch (e: Exception) { "" }
+                currentTag = if (savedTag.isNotEmpty() && tags.any { it.value == savedTag }) savedTag else tags[0].value
+                loadVideos()
+            } else {
+                loading = false
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeScreen", "init error", e)
             loading = false
         }
     }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
