@@ -41,7 +41,7 @@ fun AppNavigation(
             onBack = { currentScreen.value = "home" }
         )
         "search" -> SearchScreen(
-            repo = repo,
+            repo = repo, source = currentSource.value,
             onVideoClick = { vid, pid, source ->
                 currentVideoId.value = vid; currentVideoPid.value = pid
                 currentSource.value = source; currentScreen.value = "player"

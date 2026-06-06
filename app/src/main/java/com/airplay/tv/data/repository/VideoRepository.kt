@@ -46,8 +46,8 @@ class VideoRepository(private val api: AirPlayApi) {
         return getVideoSourceResponse(vid, pid, source, m3u8p).data
     }
 
-    suspend fun search(query: String): List<SearchResult> {
-        val resp = api.searchVideo(query)
+    suspend fun search(query: String, source: String = ""): List<SearchResult> {
+        val resp = api.searchVideo(query, source)
         return resp.data ?: emptyList()
     }
 }

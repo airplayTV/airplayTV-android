@@ -32,7 +32,8 @@ interface AirPlayApi {
 
     @GET("/api/video/search")
     suspend fun searchVideo(
-        @Query(value = "query", encoded = true) query: String
+        @Query(value = "query", encoded = true) query: String,
+        @Query("_source") source: String = ""
     ): ApiResponse<List<SearchResult>>
 
     @POST("/api/collect/add")
