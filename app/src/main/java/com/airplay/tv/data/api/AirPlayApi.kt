@@ -1,4 +1,4 @@
-package com.airplay.tv.data.api
+﻿package com.airplay.tv.data.api
 
 import retrofit2.http.GET
 import retrofit2.http.POST
@@ -14,7 +14,7 @@ interface AirPlayApi {
         @Query("tag") tag: String,
         @Query("page") page: Int,
         @Query("_source") source: String
-    ): ApiResponse<List<Video>>
+    ): ApiResponse<VideoListResponse>
 
     @GET("/api/video/detail")
     suspend fun getVideoDetail(

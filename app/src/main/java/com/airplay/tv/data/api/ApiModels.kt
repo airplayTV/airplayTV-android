@@ -1,4 +1,4 @@
-package com.airplay.tv.data.api
+﻿package com.airplay.tv.data.api
 
 import com.google.gson.annotations.SerializedName
 
@@ -26,6 +26,18 @@ data class Video(
     @SerializedName("intro") val intro: String? = null,
     @SerializedName("actors") val actors: String? = null,
     @SerializedName("links") val links: List<VideoLink>? = null
+)
+
+/**
+ * 视频列表分页响应包装
+ * API 实际返回结构：{ total, pages, page, limit, list }
+ */
+data class VideoListResponse(
+    @SerializedName("total") val total: Int = 0,
+    @SerializedName("pages") val pages: Int = 0,
+    @SerializedName("page") val page: Int = 1,
+    @SerializedName("limit") val limit: Int = 25,
+    @SerializedName("list") val list: List<Video> = emptyList()
 )
 
 data class VideoLink(

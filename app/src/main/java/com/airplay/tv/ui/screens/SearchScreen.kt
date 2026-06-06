@@ -1,5 +1,4 @@
-
-package com.airplay.tv.ui.screens
+﻿package com.airplay.tv.ui.screens
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -22,7 +21,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SearchScreen(
     repo: VideoRepository,
-    onVideoClick: (String, String) -> Unit,
+    onVideoClick: (String, String, String) -> Unit,
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -72,7 +71,8 @@ fun SearchScreen(
                         VideoCard(
                             video = com.airplay.tv.data.api.Video(id=r.id,name=r.name,thumb=r.thumb),
                             isFocused = false,
-                            onClick = { onVideoClick(r.id, "") }
+                            onClick = { onVideoClick(r.id, "", "") },
+                            modifier = Modifier.padding(4.dp)
                         )
                     }
                 }
