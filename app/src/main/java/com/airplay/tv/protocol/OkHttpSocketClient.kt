@@ -25,14 +25,34 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
-class OkHttpSocketClient(
-    private val okHttpClient: OkHttpClient,
+internal fun interface WebSocketConnector {
+    fun connect(request: Request, listener: WebSocketListener): WebSocket
+}
+
+class OkHttpSocketClient internal constructor(
+    private val connector: WebSocketConnector,
     private val parser: SocketMessageParser = SocketMessageParser(),
     private val webSocketUrl: String = AppConfig.WEBSOCKET_URL,
     coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
     private val randomUnit: () -> Double = { Random.nextDouble() },
 ) : SocketClient {
+    constructor(
+        okHttpClient: OkHttpClient,
+        parser: SocketMessageParser = SocketMessageParser(),
+        webSocketUrl: String = AppConfig.WEBSOCKET_URL,
+        coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
+        randomUnit: () -> Double = { Random.nextDouble() },
+    ) : this(
+        connector = WebSocketConnector(okHttpClient::newWebSocket),
+        parser = parser,
+        webSocketUrl = webSocketUrl,
+        coroutineDispatcher = coroutineDispatcher,
+        reconnectPolicy = reconnectPolicy,
+        randomUnit = randomUnit,
+    )
+
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + coroutineDispatcher)
     private val mutableStates = MutableStateFlow(SocketConnectionState.Closed)
@@ -88,7 +108,7 @@ class OkHttpSocketClient(
 
     private fun openWebSocket(roomId: String, connectionGeneration: Long) {
         val request = Request.Builder().url(webSocketUrl).build()
-        val webSocket = okHttpClient.newWebSocket(request, listener(roomId, connectionGeneration))
+        val webSocket = connector.connect(request, listener(roomId, connectionGeneration))
         val shouldClose = synchronized(lock) {
             if (manuallyClosed || generation != connectionGeneration) {
                 true
@@ -106,45 +126,53 @@ class OkHttpSocketClient(
         val disconnected = AtomicBoolean(false)
         return object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val isCurrent = synchronized(lock) {
-                    if (manuallyClosed || generation != connectionGeneration) {
-                        false
+                val joinMessage = joinGroupMessage(roomId)
+                val result = synchronized(lock) {
+                    if (
+                        manuallyClosed ||
+                        generation != connectionGeneration ||
+                        activeWebSocket !== webSocket
+                    ) {
+                        OpenResult.Stale
                     } else {
                         reconnectAttempt = 0
                         reconnectJob = null
-                        true
-                    }
-                }
-                if (!isCurrent) {
-                    webSocket.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
-                    return
-                }
-
-                if (webSocket.send(joinGroupMessage(roomId))) {
-                    synchronized(lock) {
-                        if (!manuallyClosed && generation == connectionGeneration) {
+                        if (webSocket.send(joinMessage)) {
                             updateState(SocketConnectionState.Connected)
+                            OpenResult.Connected
+                        } else {
+                            OpenResult.SendFailed
                         }
                     }
-                } else {
-                    webSocket.cancel()
-                    handleDisconnect(roomId, connectionGeneration, disconnected)
+                }
+                when (result) {
+                    OpenResult.Stale -> webSocket.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
+                    OpenResult.SendFailed -> {
+                        webSocket.cancel()
+                        handleDisconnect(roomId, connectionGeneration, disconnected)
+                    }
+                    OpenResult.Connected -> Unit
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val isCurrent = synchronized(lock) {
-                    !manuallyClosed && generation == connectionGeneration
+                    !manuallyClosed &&
+                        generation == connectionGeneration &&
+                        activeWebSocket === webSocket
                 }
                 if (!isCurrent) {
                     return
                 }
                 val command = parser.parse(text, roomId) ?: return
-                val stillCurrent = synchronized(lock) {
-                    !manuallyClosed && generation == connectionGeneration
-                }
-                if (stillCurrent) {
-                    mutableCommands.tryEmit(command)
+                synchronized(lock) {
+                    if (
+                        !manuallyClosed &&
+                        generation == connectionGeneration &&
+                        activeWebSocket === webSocket
+                    ) {
+                        mutableCommands.tryEmit(command)
+                    }
                 }
             }
 
@@ -202,7 +230,6 @@ class OkHttpSocketClient(
 
     private fun updateState(state: SocketConnectionState) {
         mutableStates.value = state
-        LOGGER.info("WebSocket state: $state")
     }
 
     private fun joinGroupMessage(roomId: String): String {
@@ -218,5 +245,11 @@ class OkHttpSocketClient(
         const val NORMAL_CLOSURE_CODE = 1000
         const val NORMAL_CLOSURE_REASON = "client closed"
         val LOGGER: Logger = Logger.getLogger(OkHttpSocketClient::class.java.name)
+    }
+
+    private enum class OpenResult {
+        Stale,
+        SendFailed,
+        Connected,
     }
 }

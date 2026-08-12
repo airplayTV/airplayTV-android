@@ -1,7 +1,13 @@
 package com.airplay.tv.protocol
 
+import com.google.gson.JsonParser
+import com.google.gson.JsonObject
+import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.math.roundToLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
@@ -13,10 +19,14 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -47,16 +57,18 @@ class OkHttpSocketClientTest {
 
     @Test
     fun joinsRoomAfterOpenAndEmitsOnlyParsedCommands() = runTest {
+        val roomId = "room-\"quoted\\path"
         val receivedJoin = CountDownLatch(1)
         server.enqueue(
             MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        assertTrue(text.contains("\"event\":\"join-group\""))
-                        assertTrue(text.contains("\"group\":\"room-1\""))
+                        val json = JsonParser.parseString(text).asJsonObject
+                        assertEquals("join-group", json.get("event").asString)
+                        assertEquals(roomId, json.getAsJsonObject("data").get("group").asString)
                         receivedJoin.countDown()
-                        webSocket.send("""{"event":"/unknown","group":"room-1"}""")
-                        webSocket.send("""{"event":"/ctl_play","group":"room-1"}""")
+                        webSocket.send(controlMessage("/unknown", roomId))
+                        webSocket.send(controlMessage("/ctl_play", roomId))
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -68,7 +80,7 @@ class OkHttpSocketClientTest {
         val socketClient = createClient(StandardTestDispatcher(testScheduler))
         val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
 
-        socketClient.connect("room-1")
+        socketClient.connect(roomId)
 
         assertEquals(ControlCommand.Play, command.await())
         assertTrue(receivedJoin.await(5, TimeUnit.SECONDS))
@@ -84,6 +96,144 @@ class OkHttpSocketClientTest {
         assertEquals(30_000L, policy.delayForAttempt(99, randomUnit = 0.5))
         assertEquals((1_000L * 0.8).roundToLong(), policy.delayForAttempt(0, randomUnit = 0.0))
         assertEquals((1_000L * 1.2).roundToLong(), policy.delayForAttempt(0, randomUnit = 1.0))
+        assertEquals(30_000L, policy.delayForAttempt(5, randomUnit = 1.0))
+    }
+
+    @Test
+    fun joinPayloadEscapesSpecialRoomIdAsValidJson() {
+        val roomId = "room-\"quoted\\path"
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher())
+        socketClient.connect(roomId)
+
+        connector.connections.single().open()
+
+        val json = JsonParser.parseString(
+            connector.connections.single().webSocket.sentTexts.single(),
+        ).asJsonObject
+        assertEquals("join-group", json.get("event").asString)
+        assertEquals(roomId, json.getAsJsonObject("data").get("group").asString)
+    }
+
+    @Test
+    fun staleListenerCannotJoinOrEmitAfterRoomSwitch() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+
+        socketClient.connect("old-room")
+        val oldConnection = connector.connections.single()
+        socketClient.connect("new-room")
+        val newConnection = connector.connections.last()
+
+        oldConnection.open()
+        oldConnection.message("""{"event":"/ctl_play","group":"old-room"}""")
+        assertTrue(oldConnection.webSocket.sentTexts.isEmpty())
+        assertFalse(command.isCompleted)
+
+        newConnection.open()
+        newConnection.message("""{"event":"/ctl_pause","group":"new-room"}""")
+        assertEquals(ControlCommand.Pause, command.await())
+    }
+
+    @Test
+    fun roomSwitchCannotPassAnInFlightJoinSend() {
+        val blockingSocket = RecordingWebSocket(blockFirstSend = true)
+        val connector = RecordingWebSocketConnector(firstWebSocket = blockingSocket)
+        val socketClient = createClient(connector, StandardTestDispatcher())
+        socketClient.connect("old-room")
+        val oldConnection = connector.connections.single()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val openFuture = executor.submit { oldConnection.open() }
+            assertTrue(blockingSocket.sendEntered.await(5, TimeUnit.SECONDS))
+            val switchFuture = executor.submit { socketClient.connect("new-room") }
+
+            try {
+                switchFuture.get(200, TimeUnit.MILLISECONDS)
+                throw AssertionError("room switch passed an in-flight join send")
+            } catch (_: TimeoutException) {
+                // Expected: send and generation switch share the same critical section.
+            }
+
+            blockingSocket.releaseSend.countDown()
+            openFuture.get(5, TimeUnit.SECONDS)
+            switchFuture.get(5, TimeUnit.SECONDS)
+            assertEquals(1, blockingSocket.sentTexts.size)
+
+            oldConnection.open()
+            assertEquals(1, blockingSocket.sentTexts.size)
+        } finally {
+            blockingSocket.releaseSend.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun closeCannotPassAnInFlightJoinSend() = runTest {
+        val blockingSocket = RecordingWebSocket(blockFirstSend = true)
+        val connector = RecordingWebSocketConnector(firstWebSocket = blockingSocket)
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val openFuture = executor.submit { connection.open() }
+            assertTrue(blockingSocket.sendEntered.await(5, TimeUnit.SECONDS))
+            val closeFuture = executor.submit { socketClient.close() }
+
+            try {
+                closeFuture.get(200, TimeUnit.MILLISECONDS)
+                throw AssertionError("close passed an in-flight join send")
+            } catch (_: TimeoutException) {
+                // Expected: send and close share the same critical section.
+            }
+
+            blockingSocket.releaseSend.countDown()
+            openFuture.get(5, TimeUnit.SECONDS)
+            closeFuture.get(5, TimeUnit.SECONDS)
+            assertEquals(1, blockingSocket.sentTexts.size)
+
+            connection.open()
+            connection.message("""{"event":"/ctl_play","group":"room-1"}""")
+            assertEquals(1, blockingSocket.sentTexts.size)
+            assertFalse(command.isCompleted)
+            assertEquals(SocketConnectionState.Closed, socketClient.states.value)
+        } finally {
+            command.cancel()
+            blockingSocket.releaseSend.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun consecutiveFailuresUseFullBackoffAndSuccessResetsAttempt() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val expectedDelays = listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L)
+        socketClient.connect("room-1")
+
+        expectedDelays.forEachIndexed { index, delayMs ->
+            connector.connections[index].fail()
+            advanceTimeBy(delayMs - 1)
+            runCurrent()
+            assertEquals(index + 1, connector.connections.size)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(index + 2, connector.connections.size)
+        }
+
+        connector.connections.last().open()
+        connector.connections.last().fail()
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(expectedDelays.size + 1, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(expectedDelays.size + 2, connector.connections.size)
     }
 
     @Test
@@ -195,6 +345,18 @@ class OkHttpSocketClientTest {
             randomUnit = { 0.5 },
         ).also { client = it }
 
+    private fun createClient(
+        connector: WebSocketConnector,
+        dispatcher: CoroutineDispatcher,
+    ): OkHttpSocketClient =
+        OkHttpSocketClient(
+            connector = connector,
+            webSocketUrl = "ws://localhost/socket",
+            coroutineDispatcher = dispatcher,
+            reconnectPolicy = ReconnectPolicy(jitterRatio = 0.0),
+            randomUnit = { 0.5 },
+        ).also { client = it }
+
     private fun webSocketResponse(): MockResponse =
         MockResponse().withWebSocketUpgrade(
             object : WebSocketListener() {
@@ -203,4 +365,89 @@ class OkHttpSocketClientTest {
                 }
             },
         )
+
+    private class RecordingWebSocketConnector(
+        private val firstWebSocket: RecordingWebSocket? = null,
+    ) : WebSocketConnector {
+        val connections = CopyOnWriteArrayList<RecordingConnection>()
+
+        override fun connect(request: Request, listener: WebSocketListener): WebSocket {
+            val webSocket = if (connections.isEmpty() && firstWebSocket != null) {
+                firstWebSocket
+            } else {
+                RecordingWebSocket()
+            }
+            webSocket.attachRequest(request)
+            connections += RecordingConnection(request, listener, webSocket)
+            return webSocket
+        }
+    }
+
+    private data class RecordingConnection(
+        val request: Request,
+        val listener: WebSocketListener,
+        val webSocket: RecordingWebSocket,
+    ) {
+        fun open() {
+            listener.onOpen(
+                webSocket,
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(101)
+                    .message("Switching Protocols")
+                    .build(),
+            )
+        }
+
+        fun message(text: String) {
+            listener.onMessage(webSocket, text)
+        }
+
+        fun fail() {
+            listener.onFailure(webSocket, IOException("test failure"), null)
+        }
+    }
+
+    private class RecordingWebSocket(
+        private val blockFirstSend: Boolean = false,
+    ) : WebSocket {
+        val sentTexts = CopyOnWriteArrayList<String>()
+        val sendEntered = CountDownLatch(1)
+        val releaseSend = CountDownLatch(1)
+        private var shouldBlock = blockFirstSend
+        private lateinit var webSocketRequest: Request
+
+        fun attachRequest(request: Request) {
+            webSocketRequest = request
+        }
+
+        override fun request(): Request = webSocketRequest
+
+        override fun queueSize(): Long = 0L
+
+        override fun send(text: String): Boolean {
+            if (shouldBlock) {
+                shouldBlock = false
+                sendEntered.countDown()
+                assertTrue(releaseSend.await(5, TimeUnit.SECONDS))
+            }
+            sentTexts += text
+            return true
+        }
+
+        override fun send(bytes: ByteString): Boolean = true
+
+        override fun close(code: Int, reason: String?): Boolean = true
+
+        override fun cancel() = Unit
+    }
+
+    private companion object {
+        fun controlMessage(event: String, roomId: String): String =
+            JsonObject().apply {
+                addProperty("event", event)
+                addProperty("group", roomId)
+            }.toString()
+    }
 }
