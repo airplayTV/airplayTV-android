@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.Player
 import com.airplay.tv.feature.player.Episode
 import com.airplay.tv.feature.player.PlayerController
+import com.airplay.tv.feature.player.VideoDetails
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.protocol.ControlCommand
 import com.airplay.tv.protocol.SocketClient
@@ -36,6 +37,7 @@ class SessionViewModel(
     private var overlayJob: Job? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
+    private var pendingMediaControls: PendingMediaControls? = null
     private var resolutionError: String? = null
     private var cleared = false
 
@@ -52,7 +54,7 @@ class SessionViewModel(
                         isPlaying = playerState.isPlaying,
                         positionMs = playerState.positionMs,
                         durationMs = playerState.durationMs,
-                        error = playerState.error ?: resolutionError,
+                        error = resolutionError ?: playerState.error,
                     )
                 }
             }
@@ -91,10 +93,10 @@ class SessionViewModel(
             is ControlCommand.Volume -> playbackControl {
                 playerController.adjustVolume(command.direction)
             }
-            ControlCommand.Play -> playbackControl(playerController::play)
-            ControlCommand.Pause -> playbackControl(playerController::pause)
-            ControlCommand.Forward -> playbackControl { playerController.seekBy(SEEK_STEP_MS) }
-            ControlCommand.Back -> playbackControl { playerController.seekBy(-SEEK_STEP_MS) }
+            ControlCommand.Play -> handleMediaControl(MediaControl.Play)
+            ControlCommand.Pause -> handleMediaControl(MediaControl.Pause)
+            ControlCommand.Forward -> handleMediaControl(MediaControl.Forward)
+            ControlCommand.Back -> handleMediaControl(MediaControl.Back)
             ControlCommand.Mute -> playbackControl(playerController::toggleMute)
             ControlCommand.Fullscreen -> hideInfo()
             ControlCommand.FullscreenExit -> showInfoTemporarily()
@@ -110,8 +112,11 @@ class SessionViewModel(
         val generation = ++loadGeneration
         resolveJob?.cancel()
         detailJob?.cancel()
+        pendingMediaControls = PendingMediaControls(generation)
         resolutionError = null
-        mutableUiState.update { it.copy(loading = true, error = null) }
+        mutableUiState.update {
+            it.copy(loading = true, error = playerController.state.value.error)
+        }
 
         resolveJob = viewModelScope.launch {
             val resolved = try {
@@ -120,6 +125,7 @@ class SessionViewModel(
                 throw exception
             } catch (_: Exception) {
                 if (generation == loadGeneration) {
+                    discardPendingMediaControls(generation)
                     resolutionError = LOAD_ERROR_MESSAGE
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
@@ -131,6 +137,14 @@ class SessionViewModel(
             if (generation != loadGeneration) return@launch
 
             playerController.load(resolved.url)
+            val pendingControls = pendingMediaControls
+                ?.takeIf { it.generation == generation }
+                ?.controls
+                ?.toList()
+                .orEmpty()
+            discardPendingMediaControls(generation)
+            pendingControls.forEach(::applyMediaControl)
+            if (pendingControls.isNotEmpty()) showInfoTemporarily()
             currentLoadCommand = command
             episodes = emptyList()
             resolutionError = null
@@ -140,7 +154,7 @@ class SessionViewModel(
                     loading = false,
                     title = resolved.title,
                     episodeName = resolved.episodeName,
-                    error = null,
+                    error = playerController.state.value.error,
                 )
             }
             loadDetails(command, generation)
@@ -149,20 +163,21 @@ class SessionViewModel(
 
     private fun loadDetails(command: ControlCommand.LoadVideo, generation: Long) {
         detailJob = viewModelScope.launch {
-            val loadedEpisodes = try {
-                videoResolver.loadEpisodes(command)
+            val details = try {
+                videoResolver.loadDetails(command)
             } catch (exception: CancellationException) {
                 throw exception
             } catch (_: Exception) {
-                emptyList()
+                VideoDetails()
             }
 
             if (generation != loadGeneration) return@launch
 
-            episodes = loadedEpisodes
+            episodes = details.episodes
             mutableUiState.update {
                 it.copy(
-                    episodeName = loadedEpisodes
+                    title = details.title.ifEmpty { it.title },
+                    episodeName = details.episodes
                         .firstOrNull { episode -> episode.id == command.pid }
                         ?.name
                         .orEmpty()
@@ -177,12 +192,33 @@ class SessionViewModel(
         val currentIndex = episodes.indexOfFirst { it.id == command.pid }
         if (currentIndex < 0) return
         val target = episodes.getOrNull(currentIndex + offset) ?: return
+        showInfoTemporarily()
         loadVideo(command.copy(pid = target.id))
     }
 
     private inline fun playbackControl(action: () -> Unit) {
         action()
         showInfoTemporarily()
+    }
+
+    private fun handleMediaControl(control: MediaControl) {
+        val pending = pendingMediaControls
+        if (mutableUiState.value.loading && pending?.generation == loadGeneration) {
+            pending.controls += control
+            showInfoTemporarily()
+            return
+        }
+        applyMediaControl(control)
+        showInfoTemporarily()
+    }
+
+    private fun applyMediaControl(control: MediaControl) {
+        when (control) {
+            MediaControl.Play -> playerController.play()
+            MediaControl.Pause -> playerController.pause()
+            MediaControl.Forward -> playerController.seekBy(SEEK_STEP_MS)
+            MediaControl.Back -> playerController.seekBy(-SEEK_STEP_MS)
+        }
     }
 
     private fun toggleInfo() {
@@ -228,10 +264,29 @@ class SessionViewModel(
 
     private fun invalidateLoads() {
         loadGeneration += 1
+        pendingMediaControls = null
         resolveJob?.cancel()
         resolveJob = null
         detailJob?.cancel()
         detailJob = null
+    }
+
+    private fun discardPendingMediaControls(generation: Long) {
+        if (pendingMediaControls?.generation == generation) {
+            pendingMediaControls = null
+        }
+    }
+
+    private data class PendingMediaControls(
+        val generation: Long,
+        val controls: MutableList<MediaControl> = mutableListOf(),
+    )
+
+    private enum class MediaControl {
+        Play,
+        Pause,
+        Forward,
+        Back,
     }
 
     private companion object {

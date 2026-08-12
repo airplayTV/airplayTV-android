@@ -42,23 +42,29 @@ class VideoResolver(
         )
     }
 
-    suspend fun loadEpisodes(command: ControlCommand.LoadVideo): List<Episode> = try {
+    suspend fun loadDetails(command: ControlCommand.LoadVideo): VideoDetails = try {
         val response = api.detail(vid = command.vid, source = command.source)
         if (response.code != SUCCESS_CODE) {
-            emptyList()
+            VideoDetails()
         } else {
-            response.data?.links.orEmpty()
-                .mapNotNull { link ->
-                    val id = link.id?.trim().orEmpty()
-                    val name = link.name?.trim().orEmpty()
-                    if (id.isEmpty() || name.isEmpty()) null else Episode(id, name)
-                }
+            VideoDetails(
+                title = response.data?.name?.trim().orEmpty(),
+                episodes = response.data?.links.orEmpty()
+                    .mapNotNull { link ->
+                        val id = link.id?.trim().orEmpty()
+                        val name = link.name?.trim().orEmpty()
+                        if (id.isEmpty() || name.isEmpty()) null else Episode(id, name)
+                    },
+            )
         }
     } catch (exception: CancellationException) {
         throw exception
     } catch (_: Exception) {
-        emptyList()
+        VideoDetails()
     }
+
+    suspend fun loadEpisodes(command: ControlCommand.LoadVideo): List<Episode> =
+        loadDetails(command).episodes
 
     private fun String.isHttpOrHttps(): Boolean = try {
         URI(this).let { uri ->

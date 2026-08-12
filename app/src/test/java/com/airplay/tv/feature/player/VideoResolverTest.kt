@@ -175,6 +175,25 @@ class VideoResolverTest {
     }
 
     @Test
+    fun loadsTitleAndEpisodesFromDetailResponse() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"code":200,"msg":"ok","data":{"id":"v1","name":"Example Series","links":[{"id":"p1","name":"Episode 1"},{"id":"p2","name":"Episode 2"}]}}""",
+            ),
+        )
+
+        val details = resolver.loadDetails(loadCommand)
+
+        assertEquals(
+            VideoDetails(
+                title = "Example Series",
+                episodes = listOf(Episode("p1", "Episode 1"), Episode("p2", "Episode 2")),
+            ),
+            details,
+        )
+    }
+
+    @Test
     fun returnsNoEpisodesWhenDetailRequestFails() = runTest {
         server.enqueue(MockResponse().setBody("""{"code":500,"msg":"unavailable","data":null}"""))
 

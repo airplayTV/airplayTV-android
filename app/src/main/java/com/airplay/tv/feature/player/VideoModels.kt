@@ -41,3 +41,8 @@ data class Episode(
     val id: String,
     val name: String,
 )
+
+data class VideoDetails(
+    val title: String = "",
+    val episodes: List<Episode> = emptyList(),
+)
