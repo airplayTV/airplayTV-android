@@ -17,14 +17,21 @@ class FakePlayerController(
     val loadedUrls = mutableListOf<String>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
+    var loadedUrl: String? = null
+        private set
 
     fun setState(value: PlayerState) {
         mutableState.value = value
     }
 
+    fun clearCalls() {
+        calls.clear()
+    }
+
     override fun load(url: String) {
-        calls += "load"
+        calls += "load:$url"
         loadedUrls += url
+        loadedUrl = url
     }
 
     override fun play() {
@@ -36,12 +43,12 @@ class FakePlayerController(
     }
 
     override fun seekBy(deltaMs: Long) {
-        calls += "seekBy"
+        calls += "seek:$deltaMs"
         seekDeltas += deltaMs
     }
 
     override fun adjustVolume(direction: Int) {
-        calls += "adjustVolume"
+        calls += "volume:$direction"
         volumeDirections += direction
     }
 
