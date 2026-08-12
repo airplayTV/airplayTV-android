@@ -1,16 +1,17 @@
 package com.airplay.tv.session
 
-import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionRoomIdTest {
     @Test
-    fun createsCanonicalUuid() {
+    fun creates32CharacterLowercaseHexRoomId() {
         val roomId = newSessionRoomId()
 
-        assertEquals(roomId, UUID.fromString(roomId).toString())
+        assertEquals(32, roomId.length)
+        assertTrue(roomId.matches(Regex("^[0-9a-f]{32}$")))
     }
 
     @Test

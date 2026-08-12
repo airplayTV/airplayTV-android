@@ -1,7 +1,7 @@
 package com.airplay.tv.app
 
 import android.content.Context
-import android.content.pm.ApplicationInfo
+import com.airplay.tv.BuildConfig
 import com.airplay.tv.core.network.NetworkFactory
 import com.airplay.tv.feature.player.Media3PlayerController
 import com.airplay.tv.feature.player.PlayerController
@@ -12,9 +12,7 @@ import com.airplay.tv.protocol.SocketMessageParser
 
 class AppContainer(context: Context) {
     private val applicationContext = context.applicationContext
-    private val isDebuggable =
-        applicationContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-    private val okHttpClient = NetworkFactory.okHttpClient(isDebuggable)
+    private val okHttpClient = NetworkFactory.okHttpClient(BuildConfig.DEBUG)
     private val videoApi = NetworkFactory.videoApi(okHttpClient)
 
     val videoResolver = VideoResolver(videoApi)

@@ -41,9 +41,8 @@ class SessionViewModelFactory private constructor(
         val playerController = playerControllerFactory()
         val socketClient = try {
             socketClientFactory()
-        } catch (exception: Exception) {
-            playerController.release()
-            throw exception
+        } catch (failure: Throwable) {
+            cleanupAfterConstructionFailure(null, playerController, failure)
         }
 
         @Suppress("UNCHECKED_CAST")
@@ -54,12 +53,30 @@ class SessionViewModelFactory private constructor(
                 videoResolver = videoResolver,
                 playerController = playerController,
             ) as T
-        } catch (exception: Exception) {
-            socketClient.close()
-            playerController.release()
-            throw exception
+        } catch (failure: Throwable) {
+            cleanupAfterConstructionFailure(socketClient, playerController, failure)
         }
     }
 }
 
-internal fun newSessionRoomId(): String = UUID.randomUUID().toString()
+internal fun newSessionRoomId(): String = UUID.randomUUID().toString().replace("-", "")
+
+internal fun cleanupAfterConstructionFailure(
+    socketClient: SocketClient?,
+    playerController: PlayerController,
+    originalFailure: Throwable,
+): Nothing {
+    runCleanup(originalFailure) { socketClient?.close() }
+    runCleanup(originalFailure) { playerController.release() }
+    throw originalFailure
+}
+
+private inline fun runCleanup(originalFailure: Throwable, cleanup: () -> Unit) {
+    try {
+        cleanup()
+    } catch (cleanupFailure: Throwable) {
+        if (cleanupFailure !== originalFailure) {
+            originalFailure.addSuppressed(cleanupFailure)
+        }
+    }
+}
