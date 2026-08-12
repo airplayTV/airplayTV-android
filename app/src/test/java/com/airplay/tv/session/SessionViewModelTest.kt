@@ -167,6 +167,93 @@ class SessionViewModelTest {
         }
 
     @Test
+    fun pendingControlReplayDoesNotOverrideLaterFullscreenCommand() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("slow", "p1"))
+        runCurrent()
+        socket.emit(ControlCommand.Pause)
+        socket.emit(ControlCommand.Fullscreen)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertEquals(listOf("load:https://cdn/slow-p1.m3u8", "pause"), playerController.calls)
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun pendingControlReplayDoesNotOverrideLaterToggleInfoCommand() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("slow", "p1"))
+        runCurrent()
+        socket.emit(ControlCommand.Pause)
+        socket.emit(ControlCommand.ToggleInfo)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertEquals(listOf("load:https://cdn/slow-p1.m3u8", "pause"), playerController.calls)
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun pendingControlReplayDoesNotExtendOverlayTimer() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(4_900)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("slow", "p1"))
+        runCurrent()
+        socket.emit(ControlCommand.Pause)
+        runCurrent()
+        advanceTimeBy(4_900)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.infoVisible)
+        assertEquals(listOf("load:https://cdn/slow-p1.m3u8", "pause"), playerController.calls)
+    }
+
+    @Test
+    fun pendingControlBufferKeepsOnlyLatestSixtyFourCommands() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("slow", "p1"))
+        runCurrent()
+        repeat(64) { socket.emit(ControlCommand.Pause) }
+        socket.emit(ControlCommand.Forward)
+        advanceUntilIdle()
+
+        assertEquals(65, playerController.calls.size)
+        assertEquals("load:https://cdn/slow-p1.m3u8", playerController.calls.first())
+        assertEquals(63, playerController.calls.count { it == "pause" })
+        assertEquals("seek:15000", playerController.calls.last())
+    }
+
+    @Test
     fun newLoadDiscardsPendingControlsFromPreviousGeneration() = runTest(dispatcher) {
         api.sourceResponse = { vid, pid ->
             if (vid == "old") withContext(NonCancellable) { delay(1_000) }

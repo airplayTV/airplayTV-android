@@ -144,7 +144,6 @@ class SessionViewModel(
                 .orEmpty()
             discardPendingMediaControls(generation)
             pendingControls.forEach(::applyMediaControl)
-            if (pendingControls.isNotEmpty()) showInfoTemporarily()
             currentLoadCommand = command
             episodes = emptyList()
             resolutionError = null
@@ -204,7 +203,7 @@ class SessionViewModel(
     private fun handleMediaControl(control: MediaControl) {
         val pending = pendingMediaControls
         if (mutableUiState.value.loading && pending?.generation == loadGeneration) {
-            pending.controls += control
+            pending.add(control)
             showInfoTemporarily()
             return
         }
@@ -280,7 +279,14 @@ class SessionViewModel(
     private data class PendingMediaControls(
         val generation: Long,
         val controls: MutableList<MediaControl> = mutableListOf(),
-    )
+    ) {
+        fun add(control: MediaControl) {
+            if (controls.size == MAX_PENDING_MEDIA_CONTROLS) {
+                controls.removeAt(0)
+            }
+            controls += control
+        }
+    }
 
     private enum class MediaControl {
         Play,
@@ -292,6 +298,7 @@ class SessionViewModel(
     private companion object {
         const val SEEK_STEP_MS = 15_000L
         const val INFO_TIMEOUT_MS = 5_000L
+        const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"
     }
 }
