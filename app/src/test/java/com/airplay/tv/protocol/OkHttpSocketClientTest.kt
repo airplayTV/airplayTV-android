@@ -9,6 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import kotlin.math.roundToLong
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -264,6 +265,78 @@ class OkHttpSocketClientTest {
     }
 
     @Test
+    fun joinSendFailuresUseIncreasingBackoffUntilSuccessfulJoin() = runTest {
+        val connector = RecordingWebSocketConnector(
+            sendResults = listOf(false, false, false, true, true),
+        )
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        socketClient.connect("room-1")
+
+        connector.connections[0].open()
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(1, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, connector.connections.size)
+
+        connector.connections[1].open()
+        advanceTimeBy(1_999)
+        runCurrent()
+        assertEquals(2, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(3, connector.connections.size)
+
+        connector.connections[2].open()
+        advanceTimeBy(3_999)
+        runCurrent()
+        assertEquals(3, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(4, connector.connections.size)
+
+        connector.connections[3].open()
+        assertEquals(SocketConnectionState.Connected, socketClient.states.value)
+        connector.connections[3].fail()
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(4, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(5, connector.connections.size)
+    }
+
+    @Test
+    fun blockedConsumerOverflowDropsOldestAndRetainsNewestLoad() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val releaseFirst = CompletableDeferred<Unit>()
+        val received = mutableListOf<ControlCommand>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            socketClient.commands.collect { command ->
+                received += command
+                if (received.size == 1) releaseFirst.await()
+            }
+        }
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+        connection.message(controlMessage("/ctl_play", "room-1"))
+
+        repeat(65) { index ->
+            connection.message(loadVideoMessage("room-1", "v$index"))
+        }
+        releaseFirst.complete(Unit)
+        runCurrent()
+
+        val videoIds = received.filterIsInstance<ControlCommand.LoadVideo>().map { it.vid }
+        assertEquals(64, videoIds.size)
+        assertFalse("v0" in videoIds)
+        assertTrue("v64" in videoIds)
+    }
+
+    @Test
     fun reentrantRoomSwitchWithSynchronousFailureKeepsNewReconnect() = runTest {
         val connector = RecordingWebSocketConnector(failBeforeReturnIndices = setOf(1))
         val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
@@ -430,6 +503,7 @@ class OkHttpSocketClientTest {
         private val firstWebSocket: RecordingWebSocket? = null,
         private val openBeforeReturn: Boolean = false,
         private val failBeforeReturnIndices: Set<Int> = emptySet(),
+        private val sendResults: List<Boolean> = emptyList(),
     ) : WebSocketConnector {
         val connections = CopyOnWriteArrayList<RecordingConnection>()
 
@@ -438,7 +512,7 @@ class OkHttpSocketClientTest {
             val webSocket = if (connections.isEmpty() && firstWebSocket != null) {
                 firstWebSocket
             } else {
-                RecordingWebSocket()
+                RecordingWebSocket(sendResult = sendResults.getOrNull(connectionIndex) ?: true)
             }
             webSocket.attachRequest(request)
             val connection = RecordingConnection(request, listener, webSocket)
@@ -481,6 +555,7 @@ class OkHttpSocketClientTest {
 
     private class RecordingWebSocket(
         private val blockFirstSend: Boolean = false,
+        private val sendResult: Boolean = true,
     ) : WebSocket {
         val sentTexts = CopyOnWriteArrayList<String>()
         val closeCodes = CopyOnWriteArrayList<Int>()
@@ -506,7 +581,7 @@ class OkHttpSocketClientTest {
             }
             onTextSend?.invoke()
             sentTexts += text
-            return true
+            return sendResult
         }
 
         override fun send(bytes: ByteString): Boolean = true
@@ -524,6 +599,16 @@ class OkHttpSocketClientTest {
             JsonObject().apply {
                 addProperty("event", event)
                 addProperty("group", roomId)
+            }.toString()
+
+        fun loadVideoMessage(roomId: String, vid: String): String =
+            JsonObject().apply {
+                addProperty("event", "/ctl_load_Video")
+                addProperty("group", roomId)
+                addProperty("vid", vid)
+                addProperty("pid", "p1")
+                addProperty("source", "source")
+                addProperty("mode", "mode")
             }.toString()
 
         fun expectedJoin(roomId: String): JsonObject =

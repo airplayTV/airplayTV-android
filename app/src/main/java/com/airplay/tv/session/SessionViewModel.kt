@@ -35,10 +35,16 @@ class SessionViewModel(
     private var resolveJob: Job? = null
     private var detailJob: Job? = null
     private var overlayJob: Job? = null
+    private var pendingLoad: PendingLoad? = null
+    private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
+    private var acceptedLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
     private var pendingMediaControls: PendingMediaControls? = null
     private var resolutionError: String? = null
+    private var isForeground = false
+    private var pendingForegroundPlayIntent: Boolean? = null
+    private var overlayRevision = 0L
     private var cleared = false
 
     init {
@@ -70,6 +76,40 @@ class SessionViewModel(
             hideInfo()
         } else if (mutableUiState.value.page == SessionPage.Player) {
             showPairingPage()
+        }
+    }
+
+    fun onForegroundChanged(isForeground: Boolean) {
+        if (cleared || this.isForeground == isForeground) return
+        this.isForeground = isForeground
+        if (!isForeground) {
+            pendingForegroundPlayIntent = if (pendingLoad != null) {
+                pendingMediaControls?.latestPlaybackIntent() ?: pendingForegroundPlayIntent
+            } else {
+                null
+            }
+            loadGeneration += 1
+            resolveJob?.cancel()
+            resolveJob = null
+            detailJob?.cancel()
+            detailJob = null
+            pendingMediaControls = null
+            playerController.pause()
+            return
+        }
+
+        if (pendingLoad != null) {
+            resolvePendingLoad()
+        } else {
+            pendingDetailsCommand?.let { command ->
+                loadDetails(command, loadGeneration)
+            }
+            val playIntent = pendingForegroundPlayIntent
+            pendingForegroundPlayIntent = null
+            if (playIntent == true) {
+                playerController.play()
+                showInfoTemporarily()
+            }
         }
     }
 
@@ -108,14 +148,51 @@ class SessionViewModel(
         }
     }
 
-    private fun loadVideo(command: ControlCommand.LoadVideo) {
+    private fun loadVideo(
+        command: ControlCommand.LoadVideo,
+        preserveEpisodes: Boolean = false,
+    ) {
+        loadGeneration += 1
+        resolveJob?.cancel()
+        detailJob?.cancel()
+        pendingDetailsCommand = null
+        pendingMediaControls = null
+        pendingForegroundPlayIntent = null
+        if (!preserveEpisodes) episodes = emptyList()
+        acceptedLoadCommand = command
+        pendingLoad = PendingLoad(
+            command = command,
+            preserveEpisodes = preserveEpisodes,
+            overlayRevisionAtAcceptance = overlayRevision,
+        )
+        resolutionError = null
+        mutableUiState.update {
+            it.copy(
+                page = SessionPage.Player,
+                loading = true,
+                title = if (preserveEpisodes) it.title else "",
+                episodeName = if (preserveEpisodes) {
+                    episodes.firstOrNull { episode -> episode.id == command.pid }?.name.orEmpty()
+                } else {
+                    ""
+                },
+                error = null,
+            )
+        }
+
+        if (isForeground) resolvePendingLoad()
+    }
+
+    private fun resolvePendingLoad() {
+        val load = pendingLoad ?: return
+        val command = load.command
         val generation = ++loadGeneration
         resolveJob?.cancel()
         detailJob?.cancel()
         pendingMediaControls = PendingMediaControls(generation)
-        resolutionError = null
-        mutableUiState.update {
-            it.copy(loading = true, error = playerController.state.value.error)
+        pendingForegroundPlayIntent?.let { shouldPlay ->
+            pendingMediaControls?.add(if (shouldPlay) MediaControl.Play else MediaControl.Pause)
+            pendingForegroundPlayIntent = null
         }
 
         resolveJob = viewModelScope.launch {
@@ -124,8 +201,10 @@ class SessionViewModel(
             } catch (exception: CancellationException) {
                 throw exception
             } catch (_: Exception) {
-                if (generation == loadGeneration) {
+                if (generation == loadGeneration && isForeground && pendingLoad === load) {
                     discardPendingMediaControls(generation)
+                    pendingLoad = null
+                    rollbackAcceptedCursor(load)
                     resolutionError = LOAD_ERROR_MESSAGE
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
@@ -134,9 +213,11 @@ class SessionViewModel(
                 return@launch
             }
 
-            if (generation != loadGeneration) return@launch
+            if (generation != loadGeneration || !isForeground || pendingLoad !== load) {
+                return@launch
+            }
 
-            playerController.load(resolved.url)
+            playerController.load(resolved.url, resolved.mediaType)
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }
                 ?.controls
@@ -144,23 +225,36 @@ class SessionViewModel(
                 .orEmpty()
             discardPendingMediaControls(generation)
             pendingControls.forEach(::applyMediaControl)
+            pendingLoad = null
             currentLoadCommand = command
-            episodes = emptyList()
+            acceptedLoadCommand = command
             resolutionError = null
             mutableUiState.update {
                 it.copy(
-                    page = SessionPage.Player,
                     loading = false,
-                    title = resolved.title,
-                    episodeName = resolved.episodeName,
+                    title = resolved.title.ifEmpty { it.title },
+                    episodeName = resolved.episodeName
+                        .ifEmpty {
+                            episodes.firstOrNull { episode -> episode.id == command.pid }
+                                ?.name
+                                .orEmpty()
+                        }
+                        .ifEmpty { it.episodeName },
                     error = playerController.state.value.error,
                 )
             }
-            loadDetails(command, generation)
+            if (load.overlayRevisionAtAcceptance == overlayRevision) {
+                showInfoTemporarily()
+            }
+            if (!load.preserveEpisodes || episodes.isEmpty()) {
+                loadDetails(command, generation)
+            }
         }
     }
 
     private fun loadDetails(command: ControlCommand.LoadVideo, generation: Long) {
+        pendingDetailsCommand = command
+        detailJob?.cancel()
         detailJob = viewModelScope.launch {
             val details = try {
                 videoResolver.loadDetails(command)
@@ -170,8 +264,15 @@ class SessionViewModel(
                 VideoDetails()
             }
 
-            if (generation != loadGeneration) return@launch
+            if (
+                generation != loadGeneration ||
+                !isForeground ||
+                pendingDetailsCommand != command
+            ) {
+                return@launch
+            }
 
+            pendingDetailsCommand = null
             episodes = details.episodes
             mutableUiState.update {
                 it.copy(
@@ -187,12 +288,12 @@ class SessionViewModel(
     }
 
     private fun loadAdjacentEpisode(offset: Int) {
-        val command = currentLoadCommand ?: return
+        val command = acceptedLoadCommand ?: currentLoadCommand ?: return
         val currentIndex = episodes.indexOfFirst { it.id == command.pid }
         if (currentIndex < 0) return
         val target = episodes.getOrNull(currentIndex + offset) ?: return
         showInfoTemporarily()
-        loadVideo(command.copy(pid = target.id))
+        loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
     }
 
     private inline fun playbackControl(action: () -> Unit) {
@@ -201,6 +302,16 @@ class SessionViewModel(
     }
 
     private fun handleMediaControl(control: MediaControl) {
+        if (!isForeground) {
+            pendingForegroundPlayIntent = when (control) {
+                MediaControl.Play -> true
+                MediaControl.Pause -> false
+                MediaControl.Forward,
+                MediaControl.Back,
+                -> pendingForegroundPlayIntent
+            }
+            return
+        }
         val pending = pendingMediaControls
         if (mutableUiState.value.loading && pending?.generation == loadGeneration) {
             pending.add(control)
@@ -229,15 +340,19 @@ class SessionViewModel(
     }
 
     private fun showInfoTemporarily() {
+        val revision = ++overlayRevision
         overlayJob?.cancel()
         mutableUiState.update { it.copy(infoVisible = true) }
         overlayJob = viewModelScope.launch {
             delay(INFO_TIMEOUT_MS)
-            mutableUiState.update { it.copy(infoVisible = false) }
+            if (revision == overlayRevision) {
+                mutableUiState.update { it.copy(infoVisible = false) }
+            }
         }
     }
 
     private fun hideInfo() {
+        overlayRevision += 1
         overlayJob?.cancel()
         overlayJob = null
         mutableUiState.update { it.copy(infoVisible = false) }
@@ -248,6 +363,10 @@ class SessionViewModel(
         hideInfo()
         resolutionError = null
         currentLoadCommand = null
+        acceptedLoadCommand = null
+        pendingLoad = null
+        pendingDetailsCommand = null
+        pendingForegroundPlayIntent = null
         episodes = emptyList()
         playerController.clear()
         mutableUiState.update {
@@ -263,6 +382,8 @@ class SessionViewModel(
 
     private fun invalidateLoads() {
         loadGeneration += 1
+        pendingLoad = null
+        pendingDetailsCommand = null
         pendingMediaControls = null
         resolveJob?.cancel()
         resolveJob = null
@@ -276,6 +397,21 @@ class SessionViewModel(
         }
     }
 
+    private fun rollbackAcceptedCursor(load: PendingLoad) {
+        acceptedLoadCommand = if (load.preserveEpisodes) currentLoadCommand else null
+        if (load.preserveEpisodes) {
+            val committedPid = currentLoadCommand?.pid
+            mutableUiState.update {
+                it.copy(
+                    episodeName = episodes.firstOrNull { episode -> episode.id == committedPid }
+                        ?.name
+                        .orEmpty()
+                        .ifEmpty { it.episodeName },
+                )
+            }
+        }
+    }
+
     private data class PendingMediaControls(
         val generation: Long,
         val controls: MutableList<MediaControl> = mutableListOf(),
@@ -286,7 +422,25 @@ class SessionViewModel(
             }
             controls += control
         }
+
+        fun latestPlaybackIntent(): Boolean? = controls
+            .asReversed()
+            .firstNotNullOfOrNull { control ->
+                when (control) {
+                    MediaControl.Play -> true
+                    MediaControl.Pause -> false
+                    MediaControl.Forward,
+                    MediaControl.Back,
+                    -> null
+                }
+            }
     }
+
+    private data class PendingLoad(
+        val command: ControlCommand.LoadVideo,
+        val preserveEpisodes: Boolean,
+        val overlayRevisionAtAcceptance: Long,
+    )
 
     private enum class MediaControl {
         Play,

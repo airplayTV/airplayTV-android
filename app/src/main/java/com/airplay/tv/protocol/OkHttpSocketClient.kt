@@ -14,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,7 +58,10 @@ class OkHttpSocketClient internal constructor(
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + coroutineDispatcher)
     private val mutableStates = MutableStateFlow(SocketConnectionState.Closed)
-    private val mutableCommands = MutableSharedFlow<ControlCommand>(extraBufferCapacity = COMMAND_BUFFER_CAPACITY)
+    private val mutableCommands = MutableSharedFlow<ControlCommand>(
+        extraBufferCapacity = COMMAND_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
 
     override val states: StateFlow<SocketConnectionState> = mutableStates.asStateFlow()
     override val commands: Flow<ControlCommand> = mutableCommands.asSharedFlow()
@@ -133,7 +137,6 @@ class OkHttpSocketClient internal constructor(
                     ) {
                         OpenResult.Stale
                     } else {
-                        reconnectAttempt = 0
                         reconnectJob = null
                         val sent = webSocket.send(joinMessage)
                         if (
@@ -143,6 +146,7 @@ class OkHttpSocketClient internal constructor(
                         ) {
                             OpenResult.Stale
                         } else if (sent) {
+                            reconnectAttempt = 0
                             connection.phase = ConnectionPhase.Connected
                             updateState(SocketConnectionState.Connected)
                             OpenResult.Connected

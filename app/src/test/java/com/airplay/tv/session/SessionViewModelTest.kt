@@ -3,6 +3,7 @@ package com.airplay.tv.session
 import com.airplay.tv.feature.player.ApiResponse
 import com.airplay.tv.feature.player.FakePlayerController
 import com.airplay.tv.feature.player.PlayerState
+import com.airplay.tv.feature.player.ResolvedMediaType
 import com.airplay.tv.feature.player.VideoApi
 import com.airplay.tv.feature.player.VideoDetailDto
 import com.airplay.tv.feature.player.VideoLinkDto
@@ -52,6 +53,7 @@ class SessionViewModelTest {
         api = FakeVideoApi()
         playerController = FakePlayerController()
         viewModel = createViewModel()
+        viewModel.onForegroundChanged(true)
     }
 
     @After
@@ -87,6 +89,161 @@ class SessionViewModelTest {
         }
 
     @Test
+    fun validLoadImmediatelyShowsPlayerLoadingBeforeResolveCompletes() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("slow", "p1"))
+        runCurrent()
+
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+        assertTrue(viewModel.uiState.value.loading)
+        assertNull(viewModel.uiState.value.error)
+        assertTrue(playerController.loadedUrls.isEmpty())
+    }
+
+    @Test
+    fun backgroundKeepsOnlyLatestLoadUntilForeground() = runTest(dispatcher) {
+        startCollectors()
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+
+        socket.emit(load("old", "p1"))
+        socket.emit(load("latest", "p2"))
+        runCurrent()
+
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+        assertTrue(viewModel.uiState.value.loading)
+        assertTrue(api.sourceCalls.isEmpty())
+        assertTrue(playerController.calls.isEmpty())
+
+        viewModel.onForegroundChanged(true)
+        advanceUntilIdle()
+
+        assertEquals(listOf("latest"), api.sourceCalls.map { it.vid })
+        assertEquals("https://cdn/latest-p2.m3u8", playerController.loadedUrl)
+    }
+
+    @Test
+    fun backgroundPausesAndForegroundDoesNotResumeWithoutExplicitPlay() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.clearCalls()
+
+        viewModel.onForegroundChanged(false)
+        viewModel.onForegroundChanged(true)
+
+        assertEquals(listOf("pause"), playerController.calls)
+    }
+
+    @Test
+    fun explicitBackgroundPlayRunsOnlyAfterForeground() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+
+        socket.emit(ControlCommand.Play)
+        runCurrent()
+        assertTrue(playerController.calls.isEmpty())
+
+        viewModel.onForegroundChanged(true)
+
+        assertEquals(listOf("play"), playerController.calls)
+    }
+
+    @Test
+    fun latestBackgroundPauseCancelsDeferredPlay() = runTest(dispatcher) {
+        startCollectors()
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+
+        socket.emit(ControlCommand.Play)
+        socket.emit(ControlCommand.Pause)
+        runCurrent()
+        viewModel.onForegroundChanged(true)
+
+        assertTrue(playerController.calls.isEmpty())
+    }
+
+    @Test
+    fun backgroundLoadFollowedByPauseLoadsPausedWhenForegrounded() = runTest(dispatcher) {
+        startCollectors()
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+
+        socket.emit(load("video", "p1"))
+        socket.emit(ControlCommand.Pause)
+        runCurrent()
+
+        assertTrue(api.sourceCalls.isEmpty())
+        assertTrue(playerController.calls.isEmpty())
+
+        viewModel.onForegroundChanged(true)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("load:https://cdn/video-p1.m3u8", "pause"),
+            playerController.calls,
+        )
+    }
+
+    @Test
+    fun pauseDuringForegroundResolveSurvivesStopStart() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("video", "p1"))
+        socket.emit(ControlCommand.Pause)
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+
+        viewModel.onForegroundChanged(true)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("load:https://cdn/video-p1.m3u8", "pause"),
+            playerController.calls,
+        )
+    }
+
+    @Test
+    fun backgroundInvalidatesNonCooperativeResolveAndRestartsLatestLoadOnForeground() =
+        runTest(dispatcher) {
+            var sourceAttempts = 0
+            api.sourceResponse = { vid, pid ->
+                sourceAttempts += 1
+                if (sourceAttempts == 1) withContext(NonCancellable) { delay(1_000) }
+                successfulSource("https://cdn/$vid-$pid.m3u8")
+            }
+            startCollectors()
+
+            socket.emit(load("video", "p1"))
+            runCurrent()
+            viewModel.onForegroundChanged(false)
+            advanceTimeBy(1_000)
+            runCurrent()
+
+            assertTrue(playerController.loadedUrls.isEmpty())
+            assertEquals(1, sourceAttempts)
+
+            viewModel.onForegroundChanged(true)
+            advanceUntilIdle()
+
+            assertEquals(2, sourceAttempts)
+            assertEquals(listOf("https://cdn/video-p1.m3u8"), playerController.loadedUrls)
+        }
+
+    @Test
     fun detailsDoNotBlockPlaybackAndStaleDetailsCannotOverwriteLatestVideo() =
         runTest(dispatcher) {
             api.detailResponse = { vid ->
@@ -114,6 +271,55 @@ class SessionViewModelTest {
             assertEquals("Latest", viewModel.uiState.value.title)
             assertEquals("Latest episode", viewModel.uiState.value.episodeName)
         }
+
+    @Test
+    fun backgroundDuringDetailsRetriesDetailsWithoutResumingPlayback() = runTest(dispatcher) {
+        var detailAttempts = 0
+        api.detailResponse = {
+            detailAttempts += 1
+            if (detailAttempts == 1) {
+                withContext(NonCancellable) { delay(1_000) }
+            }
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+
+        socket.emit(load("series", "p1"))
+        runCurrent()
+        assertEquals(1, detailAttempts)
+        assertEquals(listOf("https://cdn/series-p1.m3u8"), playerController.loadedUrls)
+
+        viewModel.onForegroundChanged(false)
+        playerController.clearCalls()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        viewModel.onForegroundChanged(true)
+        advanceUntilIdle()
+
+        assertEquals(2, detailAttempts)
+        assertEquals(listOf("https://cdn/series-p1.m3u8"), playerController.loadedUrls)
+        assertTrue(playerController.calls.isEmpty())
+        assertEquals("Episode 1", viewModel.uiState.value.episodeName)
+
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+
+        assertEquals("https://cdn/series-p2.m3u8", playerController.loadedUrl)
+    }
+
+    @Test
+    fun opaqueHlsTypeReachesPlayerControllerAcrossSession() = runTest(dispatcher) {
+        val opaqueUrl = "https://cdn.example/media-token"
+        api.sourceResponse = { _, _ -> successfulSource(opaqueUrl, type = " HLS ") }
+        startCollectors()
+
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+
+        assertEquals(listOf(opaqueUrl), playerController.loadedUrls)
+        assertEquals(listOf(ResolvedMediaType.HLS), playerController.loadedMediaTypes)
+    }
 
     @Test
     fun mapsPlaybackVolumeMuteAndQrCommands() = runTest(dispatcher) {
@@ -336,6 +542,81 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun successfulLoadShowsOverlayForExactlyFiveSeconds() = runTest(dispatcher) {
+        startCollectors()
+
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+
+        advanceTimeBy(4_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun everySuccessfulLoadShowsDefaultOverlayWhenNoLaterOverlayCommandArrives() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("first", "p1"))
+            advanceUntilIdle()
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.infoVisible)
+
+            socket.emit(load("second", "p2"))
+            runCurrent()
+
+            assertTrue(viewModel.uiState.value.infoVisible)
+        }
+
+    @Test
+    fun fullscreenDuringResolveSuppressesSuccessfulLoadDefaultOverlay() = runTest(dispatcher) {
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        socket.emit(ControlCommand.Fullscreen)
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun toggleInfoDuringResolveIsNotOverwrittenOrExtendedByLoadSuccess() =
+        runTest(dispatcher) {
+            api.sourceResponse = { vid, pid ->
+                delay(1_000)
+                successfulSource("https://cdn/$vid-$pid.m3u8")
+            }
+            startCollectors()
+
+            socket.emit(load("video", "p1"))
+            runCurrent()
+            socket.emit(ControlCommand.ToggleInfo)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.infoVisible)
+
+            advanceTimeBy(4_999)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.infoVisible)
+            advanceTimeBy(1)
+            runCurrent()
+
+            assertFalse(viewModel.uiState.value.infoVisible)
+        }
+
+    @Test
     fun mapsFullscreenAndToggleInfoOverlayRules() = runTest(dispatcher) {
         startCollectors()
 
@@ -394,6 +675,67 @@ class SessionViewModelTest {
             advanceUntilIdle()
             assertEquals(3, playerController.calls.count { it.startsWith("load:") })
         }
+
+    @Test
+    fun consecutiveNextCommandsAdvanceAcceptedCursorWithoutWaitingForResolve() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail(
+                    "Series",
+                    "p1" to "Episode 1",
+                    "p2" to "Episode 2",
+                    "p3" to "Episode 3",
+                )
+            }
+            startCollectors()
+            socket.emit(load("series", "p1", mode = "private-mode"))
+            advanceUntilIdle()
+            api.sourceCalls.clear()
+            api.sourceResponse = { vid, pid ->
+                delay(1_000)
+                successfulSource("https://cdn/$vid-$pid.m3u8")
+            }
+
+            socket.emit(ControlCommand.Next)
+            runCurrent()
+            socket.emit(ControlCommand.Next)
+            runCurrent()
+            advanceUntilIdle()
+
+            assertEquals(listOf("p2", "p3"), api.sourceCalls.map { it.pid })
+            assertEquals("private-mode", api.sourceCalls.last().mode)
+            assertEquals("https://cdn/series-p3.m3u8", playerController.loadedUrl)
+            assertEquals("Episode 3", viewModel.uiState.value.episodeName)
+        }
+
+    @Test
+    fun failedAdjacentLoadRollsCursorBackToLastCommittedEpisode() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail(
+                "Series",
+                "p1" to "Episode 1",
+                "p2" to "Episode 2",
+                "p3" to "Episode 3",
+            )
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+        var p2Attempts = 0
+        api.sourceResponse = { vid, pid ->
+            if (pid == "p2" && p2Attempts++ == 0) throw IllegalStateException("failure")
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+
+        assertEquals(listOf("p2", "p2"), api.sourceCalls.map { it.pid })
+        assertEquals("https://cdn/series-p2.m3u8", playerController.loadedUrl)
+    }
 
     @Test
     fun acceptedAdjacentEpisodeResetsOverlayTimerButBoundaryHasNoSideEffect() =
@@ -490,14 +832,14 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun resolveFailureKeepsPairingAndUsesFixedErrorMessage() = runTest(dispatcher) {
+    fun resolveFailureStaysOnPlayerAndUsesFixedErrorMessage() = runTest(dispatcher) {
         api.sourceResponse = { _, _ -> throw IllegalStateException("mode=do-not-leak") }
         startCollectors()
 
         socket.emit(load("video", "p1", mode = "do-not-leak"))
         advanceUntilIdle()
 
-        assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
         assertFalse(viewModel.uiState.value.loading)
         assertEquals("视频加载失败，请重试", viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.toString().contains("do-not-leak"))
@@ -555,7 +897,7 @@ class SessionViewModelTest {
         advanceUntilIdle()
 
         assertTrue(playerController.loadedUrls.isEmpty())
-        assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
     }
 
     @Test
@@ -655,8 +997,12 @@ class SessionViewModelTest {
             return sourceResponse(vid, pid)
         }
 
-        override suspend fun detail(vid: String, source: String): ApiResponse<VideoDetailDto> =
-            try {
+        override suspend fun detail(
+            vid: String,
+            source: String,
+            mode: String,
+            client: String,
+        ): ApiResponse<VideoDetailDto> = try {
                 detailResponse(vid)
             } catch (exception: CancellationException) {
                 throw exception
@@ -671,9 +1017,9 @@ class SessionViewModelTest {
     )
 
     private companion object {
-        fun successfulSource(url: String) = ApiResponse(
+        fun successfulSource(url: String, type: String? = null) = ApiResponse(
             code = 200,
-            data = VideoSourceDto(url = url),
+            data = VideoSourceDto(url = url, type = type),
         )
 
         fun successfulDetail(title: String, vararg episodes: Pair<String, String>) = ApiResponse(

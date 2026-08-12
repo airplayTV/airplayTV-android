@@ -12,13 +12,14 @@ import com.airplay.tv.protocol.SocketMessageParser
 
 class AppContainer(context: Context) {
     private val applicationContext = context.applicationContext
-    private val okHttpClient = NetworkFactory.okHttpClient(BuildConfig.DEBUG)
-    private val videoApi = NetworkFactory.videoApi(okHttpClient)
+    private val apiClient = NetworkFactory.apiClient(BuildConfig.DEBUG)
+    private val webSocketClient = NetworkFactory.webSocketClient(BuildConfig.DEBUG)
+    private val videoApi = NetworkFactory.videoApi(apiClient)
 
     val videoResolver = VideoResolver(videoApi)
 
     fun createSocketClient(): SocketClient =
-        OkHttpSocketClient(okHttpClient, SocketMessageParser())
+        OkHttpSocketClient(webSocketClient, SocketMessageParser())
 
     fun createPlayerController(): PlayerController =
         Media3PlayerController(applicationContext)

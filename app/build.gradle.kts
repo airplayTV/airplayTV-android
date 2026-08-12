@@ -13,6 +13,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
         release {
@@ -42,6 +43,7 @@ dependencies {
     implementation(libs.compose.foundation) 
     implementation(libs.compose.runtime)
     implementation(libs.compose.material3) 
+    debugImplementation(enforcedPlatform(libs.compose.bom))
     debugImplementation(libs.compose.ui.tooling) 
     implementation(libs.tv.foundation)
     implementation(libs.tv.material) 
@@ -62,7 +64,9 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)
 
-    androidTestImplementation(platform(libs.compose.bom))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(enforcedPlatform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

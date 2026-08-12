@@ -15,6 +15,7 @@ class FakePlayerController(
 
     val calls = mutableListOf<String>()
     val loadedUrls = mutableListOf<String>()
+    val loadedMediaTypes = mutableListOf<ResolvedMediaType>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
     var loadedUrl: String? = null
@@ -28,9 +29,10 @@ class FakePlayerController(
         calls.clear()
     }
 
-    override fun load(url: String) {
+    override fun load(url: String, mediaType: ResolvedMediaType) {
         calls += "load:$url"
         loadedUrls += url
+        loadedMediaTypes += mediaType
         loadedUrl = url
     }
 

@@ -14,8 +14,22 @@ object NetworkFactory {
         require(baseUrl.isHttps) { "API base URL must use HTTPS" }
     }
 
-    fun okHttpClient(debug: Boolean): OkHttpClient = OkHttpClient.Builder()
+    fun apiClient(debug: Boolean): OkHttpClient = baseClient(debug).build()
+
+    fun webSocketClient(debug: Boolean): OkHttpClient = baseClient(debug)
         .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
+        .build()
+
+    fun videoApi(okHttpClient: OkHttpClient): VideoApi = Retrofit.Builder()
+        .baseUrl(apiBaseUrl)
+        .client(okHttpClient)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+        .create(VideoApi::class.java)
+
+    private fun baseClient(debug: Boolean): OkHttpClient.Builder = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .apply {
             if (debug) {
                 addInterceptor(
@@ -25,14 +39,6 @@ object NetworkFactory {
                 )
             }
         }
-        .build()
-
-    fun videoApi(okHttpClient: OkHttpClient): VideoApi = Retrofit.Builder()
-        .baseUrl(apiBaseUrl)
-        .client(okHttpClient)
-        .addConverterFactory(GsonConverterFactory.create())
-        .build()
-        .create(VideoApi::class.java)
 
     private const val PING_INTERVAL_SECONDS = 20L
 }

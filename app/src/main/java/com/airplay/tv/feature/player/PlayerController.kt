@@ -14,7 +14,7 @@ interface PlayerController {
     val state: StateFlow<PlayerState>
     val player: Player
 
-    fun load(url: String)
+    fun load(url: String, mediaType: ResolvedMediaType)
 
     fun play()
 

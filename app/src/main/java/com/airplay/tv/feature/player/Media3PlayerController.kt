@@ -7,6 +7,7 @@ import android.os.Looper
 import androidx.annotation.MainThread
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -66,8 +67,7 @@ class Media3PlayerController(context: Context) : PlayerController {
             stopPositionUpdates()
             if (retryGate.tryAcquire()) {
                 mutableState.value = mutableState.value.copy(error = null)
-                player.prepare()
-                player.play()
+                retryPlayer(player)
             } else {
                 mutableState.value = mutableState.value.copy(
                     isPlaying = false,
@@ -82,13 +82,13 @@ class Media3PlayerController(context: Context) : PlayerController {
     }
 
     @MainThread
-    override fun load(url: String) {
+    override fun load(url: String, mediaType: ResolvedMediaType) {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
         lifecycle.onLoad()
         mutableState.value = PlayerState()
-        player.setMediaItem(MediaItem.fromUri(url))
+        player.setMediaItem(buildMediaItem(url, mediaType))
         player.prepare()
         player.play()
     }
@@ -203,6 +203,28 @@ class Media3PlayerController(context: Context) : PlayerController {
     private fun rememberCurrentAudibleVolume() {
         val volume = currentVolume()
         if (volume > 0) lastAudibleVolume = volume
+    }
+}
+
+internal fun buildMediaItem(url: String, mediaType: ResolvedMediaType): MediaItem =
+    MediaItem.Builder()
+        .setUri(url)
+        .apply { mediaType.media3MimeType()?.let(::setMimeType) }
+        .build()
+
+internal fun ResolvedMediaType.media3MimeType(): String? = when (this) {
+    ResolvedMediaType.HLS -> MimeTypes.APPLICATION_M3U8
+    ResolvedMediaType.MP4 -> MimeTypes.VIDEO_MP4
+    ResolvedMediaType.UNKNOWN -> null
+}
+
+internal fun retryPlayer(player: Player) {
+    val shouldPlay = player.playWhenReady
+    player.prepare()
+    if (shouldPlay) {
+        player.play()
+    } else {
+        player.pause()
     }
 }
 

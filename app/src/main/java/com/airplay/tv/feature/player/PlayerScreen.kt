@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -78,9 +79,19 @@ fun PlayerScreen(
 
         if (state.error != null) {
             ErrorOverlay(modifier = Modifier.align(Alignment.Center))
+        } else if (shouldShowLoadingOverlay(state)) {
+            CircularProgressIndicator(
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .testTag("player-loading-overlay"),
+            )
         }
     }
 }
+
+internal fun shouldShowLoadingOverlay(state: SessionUiState): Boolean =
+    state.loading && state.error == null
 
 @Composable
 private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifier) {

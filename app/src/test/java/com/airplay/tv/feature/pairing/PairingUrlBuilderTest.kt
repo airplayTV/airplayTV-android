@@ -1,5 +1,6 @@
 package com.airplay.tv.feature.pairing
 
+import com.airplay.tv.core.config.AppConfig
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -12,9 +13,14 @@ class PairingUrlBuilderTest {
         )
 
         assertEquals(
-            "https://airplay-tv.pages.dev/join?room_id=room%20id%2F%E4%B8%AD%E6%96%87&t=1723456789012",
+            "${AppConfig.H5_BASE_URL}/join?room_id=room%20id%2F%E4%B8%AD%E6%96%87&t=1723456789012",
             url,
         )
+    }
+
+    @Test
+    fun qrValidationPrefixIsDerivedFromConfiguredH5BaseUrl() {
+        assertEquals("${AppConfig.H5_BASE_URL}/join?", PairingUrlBuilder.JOIN_URL_PREFIX)
     }
 
     @Test(expected = IllegalArgumentException::class)

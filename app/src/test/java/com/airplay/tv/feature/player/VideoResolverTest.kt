@@ -2,6 +2,7 @@ package com.airplay.tv.feature.player
 
 import com.airplay.tv.core.network.NetworkFactory
 import com.airplay.tv.protocol.ControlCommand
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -9,6 +10,7 @@ import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
@@ -32,7 +34,7 @@ class VideoResolverTest {
         server.start()
         val api = Retrofit.Builder()
             .baseUrl(server.url("/"))
-            .client(NetworkFactory.okHttpClient(debug = false))
+            .client(NetworkFactory.apiClient(debug = false))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(VideoApi::class.java)
@@ -48,7 +50,7 @@ class VideoResolverTest {
     fun resolvesSourceWithModeHeaderAndExpectedQuery() = runTest {
         server.enqueue(
             MockResponse().setBody(
-                """{"code":200,"msg":"ok","data":{"url":"https://cdn.example/v.m3u8","type":"hls"}}""",
+                """{"code":200,"msg":"ok","data":{"url":"https://cdn.example/opaque-token","type":"hls"}}""",
             ),
         )
 
@@ -58,10 +60,53 @@ class VideoResolverTest {
         assertEquals("secret-value", request.getHeader("X-Source-Mode"))
         assertEquals("airplayTV-android", request.getHeader("X-Client"))
         assertEquals("/api/video/source?vid=v1&pid=p2&_source=s1&_m3u8p=false", request.path)
-        assertEquals("https://cdn.example/v.m3u8", result.url)
+        assertEquals("https://cdn.example/opaque-token", result.url)
         assertEquals("v1", result.vid)
         assertEquals("p2", result.pid)
         assertEquals("s1", result.source)
+        assertEquals(ResolvedMediaType.HLS, result.mediaType)
+    }
+
+    @Test
+    fun normalizesKnownMp4AndLeavesUnknownTypeForInference() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"code":200,"data":{"url":"https://cdn.example/opaque","type":" video/mp4 "}}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setBody(
+                """{"code":200,"data":{"url":"https://cdn.example/stream","type":"custom"}}""",
+            ),
+        )
+
+        val mp4 = resolver.resolve(loadCommand)
+        val unknown = resolver.resolve(loadCommand)
+
+        assertEquals(ResolvedMediaType.MP4, mp4.mediaType)
+        assertEquals(ResolvedMediaType.UNKNOWN, unknown.mediaType)
+    }
+
+    @Test
+    fun apiCredentialsNeverFollowRedirects() = runTest {
+        val redirectTarget = MockWebServer()
+        redirectTarget.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(302)
+                    .setHeader("Location", redirectTarget.url("/credential-target")),
+            )
+
+            val exception = captureResolveException { resolver.resolve(loadCommand) }
+            val sourceRequest = server.takeRequest()
+
+            assertEquals(ResolveErrorCode.NETWORK_FAILURE, exception.code)
+            assertEquals("secret-value", sourceRequest.getHeader("X-Source-Mode"))
+            assertNull(redirectTarget.takeRequest(200, TimeUnit.MILLISECONDS))
+        } finally {
+            redirectTarget.shutdown()
+        }
     }
 
     @Test
@@ -171,6 +216,8 @@ class VideoResolverTest {
         val request = server.takeRequest()
 
         assertEquals("/api/video/detail?id=v1&_source=s1", request.path)
+        assertEquals("secret-value", request.getHeader("X-Source-Mode"))
+        assertEquals("airplayTV-android", request.getHeader("X-Client"))
         assertEquals(listOf(Episode("p1", "Episode 1"), Episode("p2", "Episode 2")), episodes)
     }
 
@@ -220,8 +267,12 @@ class VideoResolverTest {
                 client: String,
             ): ApiResponse<VideoSourceDto> = throw cancellation
 
-            override suspend fun detail(vid: String, source: String): ApiResponse<VideoDetailDto> =
-                throw cancellation
+            override suspend fun detail(
+                vid: String,
+                source: String,
+                mode: String,
+                client: String,
+            ): ApiResponse<VideoDetailDto> = throw cancellation
         })
 
         val thrown = try {

@@ -9,12 +9,15 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.activity.viewModels
 import com.airplay.tv.app.App
 import com.airplay.tv.session.SessionViewModel
-import com.airplay.tv.session.SessionViewModelFactory
 
 class MainActivity : ComponentActivity() {
+    private val sessionViewModel: SessionViewModel by viewModels {
+        (application as AirPlayTVApp).sessionViewModelFactory()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -24,11 +27,7 @@ class MainActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        val factory = SessionViewModelFactory(
-            (application as AirPlayTVApp).appContainer,
-        )
         setContent {
-            val sessionViewModel: SessionViewModel = viewModel(factory = factory)
             val state by sessionViewModel.uiState.collectAsStateWithLifecycle()
 
             App(
@@ -37,5 +36,15 @@ class MainActivity : ComponentActivity() {
                 onBack = sessionViewModel::onBack,
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        sessionViewModel.onForegroundChanged(true)
+    }
+
+    override fun onStop() {
+        sessionViewModel.onForegroundChanged(false)
+        super.onStop()
     }
 }

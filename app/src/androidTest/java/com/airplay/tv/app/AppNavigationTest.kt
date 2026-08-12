@@ -76,6 +76,24 @@ class AppNavigationTest {
     }
 
     @Test
+    fun playerLoadingStateShowsLoadingLayerImmediately() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    loading = true,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("player-screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("player-loading-overlay").assertIsDisplayed()
+    }
+
+    @Test
     fun playerErrorUsesFixedFriendlyMessageWithoutLeakingUrl() {
         composeRule.setContent {
             AppNavigation(

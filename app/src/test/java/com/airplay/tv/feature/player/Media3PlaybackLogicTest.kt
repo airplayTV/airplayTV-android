@@ -1,12 +1,42 @@
 package com.airplay.tv.feature.player
 
 import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Player
+import java.lang.reflect.Proxy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Media3PlaybackLogicTest {
+    @Test
+    fun retryPreservesCurrentPlaybackIntent() {
+        val foregroundCalls = mutableListOf<String>()
+        val backgroundCalls = mutableListOf<String>()
+
+        retryPlayer(recordingPlayer(playWhenReady = true, foregroundCalls))
+        retryPlayer(recordingPlayer(playWhenReady = false, backgroundCalls))
+
+        assertEquals(listOf("prepare", "play"), foregroundCalls)
+        assertEquals(listOf("prepare", "pause"), backgroundCalls)
+    }
+
+    @Test
+    fun opaqueHlsMapsToExplicitMedia3MimeType() {
+        assertEquals(MimeTypes.APPLICATION_M3U8, ResolvedMediaType.HLS.media3MimeType())
+    }
+
+    @Test
+    fun knownMp4MapsToExplicitMedia3MimeType() {
+        assertEquals(MimeTypes.VIDEO_MP4, ResolvedMediaType.MP4.media3MimeType())
+    }
+
+    @Test
+    fun unknownTypeLeavesMedia3MimeTypeUnsetForInference() {
+        assertEquals(null, ResolvedMediaType.UNKNOWN.media3MimeType())
+    }
+
     @Test
     fun seekTargetIsBoundedByKnownDuration() {
         assertEquals(10_000L, calculateSeekTarget(8_000L, 5_000L, 10_000L))
@@ -61,3 +91,27 @@ class Media3PlaybackLogicTest {
         assertTrue(lifecycle.isReleased)
     }
 }
+
+private fun recordingPlayer(playWhenReady: Boolean, calls: MutableList<String>): Player =
+    Proxy.newProxyInstance(
+        Player::class.java.classLoader,
+        arrayOf(Player::class.java),
+    ) { proxy, method, arguments ->
+        when (method.name) {
+            "getPlayWhenReady" -> playWhenReady
+            "prepare" -> calls += "prepare"
+            "play" -> calls += "play"
+            "pause" -> calls += "pause"
+            "equals" -> proxy === arguments?.firstOrNull()
+            "hashCode" -> System.identityHashCode(proxy)
+            "toString" -> "recordingPlayer"
+            else -> when (method.returnType) {
+                java.lang.Boolean.TYPE -> false
+                java.lang.Integer.TYPE -> 0
+                java.lang.Long.TYPE -> 0L
+                java.lang.Float.TYPE -> 0F
+                java.lang.Double.TYPE -> 0.0
+                else -> null
+            }
+        }
+    } as Player

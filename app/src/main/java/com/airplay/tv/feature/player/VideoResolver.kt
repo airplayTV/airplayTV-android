@@ -39,11 +39,16 @@ class VideoResolver(
             pid = command.pid,
             source = command.source,
             url = url,
+            mediaType = response.data?.type.toResolvedMediaType(),
         )
     }
 
     suspend fun loadDetails(command: ControlCommand.LoadVideo): VideoDetails = try {
-        val response = api.detail(vid = command.vid, source = command.source)
+        val response = api.detail(
+            vid = command.vid,
+            source = command.source,
+            mode = command.mode,
+        )
         if (response.code != SUCCESS_CODE) {
             VideoDetails()
         } else {
@@ -74,6 +79,15 @@ class VideoResolver(
         }
     } catch (_: Exception) {
         false
+    }
+
+    private fun String?.toResolvedMediaType(): ResolvedMediaType = when (
+        this?.trim()?.lowercase(Locale.US)
+    ) {
+        "hls", "m3u8", "application/vnd.apple.mpegurl", "application/x-mpegurl" ->
+            ResolvedMediaType.HLS
+        "mp4", "video/mp4" -> ResolvedMediaType.MP4
+        else -> ResolvedMediaType.UNKNOWN
     }
 
     private companion object {

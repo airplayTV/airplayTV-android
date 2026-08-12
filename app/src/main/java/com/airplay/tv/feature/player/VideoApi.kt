@@ -19,6 +19,8 @@ interface VideoApi {
     suspend fun detail(
         @Query("id") vid: String,
         @Query("_source") source: String,
+        @Header("X-Source-Mode") mode: String,
+        @Header("X-Client") client: String = CLIENT_NAME,
     ): ApiResponse<VideoDetailDto>
 
     private companion object {

@@ -33,9 +33,16 @@ data class ResolvedVideo(
     val pid: String,
     val source: String,
     val url: String,
+    val mediaType: ResolvedMediaType,
     val title: String = "",
     val episodeName: String = "",
 )
+
+enum class ResolvedMediaType {
+    HLS,
+    MP4,
+    UNKNOWN,
+}
 
 data class Episode(
     val id: String,
