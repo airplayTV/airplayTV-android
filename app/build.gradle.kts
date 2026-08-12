@@ -2,7 +2,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.devtools.ksp")
 }
 
 android {
@@ -51,11 +50,16 @@ dependencies {
     implementation(libs.retrofit.converter.gson) 
     implementation(libs.okhttp) 
     implementation(libs.okhttp.logging) 
-    implementation(libs.room.runtime) 
-    implementation(libs.room.ktx) 
-    ksp(libs.room.compiler) 
-    implementation(libs.datastore.preferences) 
-    implementation(libs.coil.compose) 
     implementation(libs.coroutines.core) 
     implementation(libs.coroutines.android) 
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.zxing.core)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.coroutines.test)
+
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
