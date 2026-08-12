@@ -11,9 +11,11 @@ class SocketMessageParserTest {
     fun parsesLoadVideoWithOptionalMode() {
         val withMode = """{"event":"/ctl_load_Video","group":"room-1","vid":"v1","pid":"p2","source":"s","mode":"m"}"""
         val withoutMode = """{"event":"/ctl_load_Video","group":"room-1","vid":"v1","pid":"p2","source":"s"}"""
+        val nullMode = """{"event":"/ctl_load_Video","group":"room-1","vid":"v1","pid":"p2","source":"s","mode":null}"""
 
         assertEquals(ControlCommand.LoadVideo("v1", "p2", "s", "m"), parser.parse(withMode, "room-1"))
         assertEquals(ControlCommand.LoadVideo("v1", "p2", "s", ""), parser.parse(withoutMode, "room-1"))
+        assertNull(parser.parse(nullMode, "room-1"))
     }
 
     @Test

@@ -25,7 +25,7 @@ class SocketMessageParser {
         vid = root.optionalString("vid"),
         pid = root.optionalString("pid"),
         source = root.optionalString("source"),
-        mode = root.optionalString("mode"),
+        mode = root.optionalMode(),
         value = root.optionalInt("value"),
     )
 
@@ -71,6 +71,13 @@ class SocketMessageParser {
             throw JsonParseException("$name must be a string")
         }
         return value.asString
+    }
+
+    private fun JsonObject.optionalMode(): String? {
+        if (has("mode") && get("mode").isJsonNull) {
+            throw JsonParseException("mode must be a string")
+        }
+        return optionalString("mode")
     }
 
     private fun JsonObject.optionalInt(name: String): Int? {
