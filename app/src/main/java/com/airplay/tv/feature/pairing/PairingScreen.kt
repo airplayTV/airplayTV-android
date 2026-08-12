@@ -17,8 +17,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,22 +29,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.airplay.tv.protocol.SocketConnectionState
 import com.airplay.tv.session.SessionUiState
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 @Composable
 fun PairingScreen(
     state: SessionUiState,
+    qrCode: android.graphics.Bitmap?,
     modifier: Modifier = Modifier,
-    qrCodeGenerator: QrCodeGenerator = QrCodeGenerator(),
 ) {
-    val qrCode by produceState<android.graphics.Bitmap?>(initialValue = null, state.roomId) {
-        value = withContext(Dispatchers.Default) {
-            val content = PairingUrlBuilder.build(state.roomId, System.currentTimeMillis())
-            qrCodeGenerator.generate(content, QR_CODE_PIXELS)
-        }
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -183,5 +172,3 @@ fun ConnectionStatus(
         )
     }
 }
-
-private const val QR_CODE_PIXELS = 768
