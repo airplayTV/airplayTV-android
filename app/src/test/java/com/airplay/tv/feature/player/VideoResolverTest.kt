@@ -5,10 +5,11 @@ import com.airplay.tv.protocol.ControlCommand
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
 import retrofit2.Retrofit
@@ -93,28 +94,41 @@ class VideoResolverTest {
     }
 
     @Test
-    fun exposesServiceMessageOnlyForBusinessFailure() = runTest {
-        server.enqueue(MockResponse().setBody("""{"code":403,"msg":"source unavailable","data":null}"""))
-
-        val exception = captureResolveException { resolver.resolve(loadCommand) }
-
-        assertEquals(ResolveErrorCode.SERVICE_REJECTED, exception.code)
-        assertTrue(exception.message.orEmpty().contains("source unavailable"))
-        assertFalse(exception.message.orEmpty().contains(loadCommand.mode))
-    }
-
-    @Test
-    fun removesModeWhenServiceMessageEchoesIt() = runTest {
+    fun rejectsMediaUrlWithRawUserInfo() = runTest {
+        val unsafeUrl = "http://user:pass@cdn.example/private.m3u8"
         server.enqueue(
             MockResponse().setBody(
-                """{"code":403,"msg":"source unavailable: secret-value","data":null}""",
+                """{"code":200,"msg":"ok","data":{"url":"$unsafeUrl"}}""",
             ),
         )
 
         val exception = captureResolveException { resolver.resolve(loadCommand) }
 
-        assertEquals(ResolveErrorCode.SERVICE_REJECTED, exception.code)
-        assertFalse(exception.message.orEmpty().contains(loadCommand.mode))
+        assertEquals(ResolveErrorCode.UNSAFE_MEDIA_URL, exception.code)
+        assertFalse(exception.message.orEmpty().contains(unsafeUrl))
+    }
+
+    @Test
+    fun doesNotExposeServerControlledMessage() = runTest {
+        val sensitiveMessages = listOf(
+            "X-Client=airplayTV-android",
+            "token=abc",
+            "mode=secret-value",
+            "https://cdn.example/private.m3u8",
+        )
+        sensitiveMessages.forEach { serverMessage ->
+            server.enqueue(
+                MockResponse().setBody(
+                    """{"code":403,"msg":"$serverMessage","data":null}""",
+                ),
+            )
+
+            val exception = captureResolveException { resolver.resolve(loadCommand) }
+
+            assertEquals(ResolveErrorCode.SERVICE_REJECTED, exception.code)
+            assertEquals(ResolveErrorCode.SERVICE_REJECTED.name, exception.message)
+            assertFalse(exception.message.orEmpty().contains(serverMessage))
+        }
     }
 
     @Test
@@ -165,6 +179,40 @@ class VideoResolverTest {
         server.enqueue(MockResponse().setBody("""{"code":500,"msg":"unavailable","data":null}"""))
 
         assertEquals(emptyList<Episode>(), resolver.loadEpisodes(loadCommand))
+    }
+
+    @Test
+    fun returnsNoEpisodesWhenDetailConnectionDrops() = runTest {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+
+        assertEquals(emptyList<Episode>(), resolver.loadEpisodes(loadCommand))
+    }
+
+    @Test
+    fun rethrowsCancellationFromDetailRequest() = runTest {
+        val cancellation = kotlinx.coroutines.CancellationException("cancel")
+        val cancellingResolver = VideoResolver(object : VideoApi {
+            override suspend fun source(
+                vid: String,
+                pid: String,
+                source: String,
+                proxy: Boolean,
+                mode: String,
+                client: String,
+            ): ApiResponse<VideoSourceDto> = throw cancellation
+
+            override suspend fun detail(vid: String, source: String): ApiResponse<VideoDetailDto> =
+                throw cancellation
+        })
+
+        val thrown = try {
+            cancellingResolver.loadEpisodes(loadCommand)
+            throw AssertionError("Expected CancellationException")
+        } catch (exception: kotlinx.coroutines.CancellationException) {
+            exception
+        }
+
+        assertSame(cancellation, thrown)
     }
 
     private suspend fun captureResolveException(block: suspend () -> Unit): ResolveVideoException =

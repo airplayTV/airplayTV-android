@@ -21,18 +21,14 @@ class VideoResolver(
         } catch (_: Exception) {
             throw ResolveVideoException(ResolveErrorCode.NETWORK_FAILURE)
         }
-        val serviceMessage = response.msg.withoutMode(command.mode)
 
         if (response.code != SUCCESS_CODE) {
-            throw ResolveVideoException(
-                ResolveErrorCode.SERVICE_REJECTED,
-                serviceMessage,
-            )
+            throw ResolveVideoException(ResolveErrorCode.SERVICE_REJECTED)
         }
 
         val url = response.data?.url?.trim().orEmpty()
         if (url.isEmpty()) {
-            throw ResolveVideoException(ResolveErrorCode.INVALID_RESPONSE, serviceMessage)
+            throw ResolveVideoException(ResolveErrorCode.INVALID_RESPONSE)
         }
         if (!url.isHttpOrHttps()) {
             throw ResolveVideoException(ResolveErrorCode.UNSAFE_MEDIA_URL)
@@ -66,14 +62,12 @@ class VideoResolver(
 
     private fun String.isHttpOrHttps(): Boolean = try {
         URI(this).let { uri ->
-            uri.scheme?.lowercase(Locale.US) in MEDIA_SCHEMES && !uri.host.isNullOrBlank()
+            uri.scheme?.lowercase(Locale.US) in MEDIA_SCHEMES &&
+                !uri.host.isNullOrBlank() &&
+                uri.rawUserInfo == null
         }
     } catch (_: Exception) {
         false
-    }
-
-    private fun String?.withoutMode(mode: String): String? = takeUnless { message ->
-        mode.isNotEmpty() && message.orEmpty().contains(mode, ignoreCase = true)
     }
 
     private companion object {
@@ -91,29 +85,4 @@ enum class ResolveErrorCode {
 
 class ResolveVideoException(
     val code: ResolveErrorCode,
-    serviceMessage: String? = null,
-) : RuntimeException(buildMessage(code, serviceMessage)) {
-    private companion object {
-        private val SENSITIVE_MESSAGE_MARKERS = listOf(
-            "://",
-            "authorization",
-            "cookie",
-            "x-source-mode",
-        )
-
-        fun buildMessage(code: ResolveErrorCode, serviceMessage: String?): String {
-            val safeMessage = serviceMessage
-                ?.trim()
-                ?.take(MAX_SERVICE_MESSAGE_LENGTH)
-                ?.takeUnless { message ->
-                    SENSITIVE_MESSAGE_MARKERS.any { marker ->
-                        message.contains(marker, ignoreCase = true)
-                    }
-                }
-                .orEmpty()
-            return if (safeMessage.isEmpty()) code.name else "${code.name}: $safeMessage"
-        }
-
-        const val MAX_SERVICE_MESSAGE_LENGTH = 256
-    }
-}
+) : RuntimeException(code.name)
