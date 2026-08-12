@@ -61,8 +61,7 @@ class OkHttpSocketClient internal constructor(
     override val states: StateFlow<SocketConnectionState> = mutableStates.asStateFlow()
     override val commands: Flow<ControlCommand> = mutableCommands.asSharedFlow()
 
-    private var activeWebSocket: WebSocket? = null
-    private var activeRoomId: String? = null
+    private var activeConnection: ConnectionContext? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
     private var generation = 0L
@@ -72,20 +71,19 @@ class OkHttpSocketClient internal constructor(
         require(roomId.isNotBlank()) { "roomId must not be blank" }
 
         val previousSocket: WebSocket?
-        val connectionGeneration: Long
+        val connection: ConnectionContext
         synchronized(lock) {
             check(!manuallyClosed) { "Socket client is closed" }
             reconnectJob?.cancel()
             reconnectJob = null
-            previousSocket = activeWebSocket
-            activeWebSocket = null
-            activeRoomId = roomId
+            previousSocket = activeConnection?.webSocket
             reconnectAttempt = 0
-            connectionGeneration = ++generation
+            connection = ConnectionContext(++generation, roomId)
+            activeConnection = connection
             updateState(SocketConnectionState.Connecting)
         }
         previousSocket?.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
-        openWebSocket(roomId, connectionGeneration)
+        openWebSocket(connection)
     }
 
     override fun close() {
@@ -98,23 +96,22 @@ class OkHttpSocketClient internal constructor(
             generation++
             reconnectJob?.cancel()
             reconnectJob = null
-            socketToClose = activeWebSocket
-            activeWebSocket = null
+            socketToClose = activeConnection?.webSocket
+            activeConnection = null
             updateState(SocketConnectionState.Closed)
         }
         socketToClose?.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
         scope.cancel()
     }
 
-    private fun openWebSocket(roomId: String, connectionGeneration: Long) {
+    private fun openWebSocket(connection: ConnectionContext) {
         val request = Request.Builder().url(webSocketUrl).build()
-        val webSocket = connector.connect(request, listener(roomId, connectionGeneration))
+        val webSocket = connector.connect(request, listener(connection))
         val shouldClose = synchronized(lock) {
-            if (manuallyClosed || generation != connectionGeneration) {
+            if (!isCurrent(connection)) {
                 true
             } else {
-                activeWebSocket = webSocket
-                false
+                bindSocket(connection, webSocket).not()
             }
         }
         if (shouldClose) {
@@ -122,22 +119,30 @@ class OkHttpSocketClient internal constructor(
         }
     }
 
-    private fun listener(roomId: String, connectionGeneration: Long): WebSocketListener {
+    private fun listener(connection: ConnectionContext): WebSocketListener {
         val disconnected = AtomicBoolean(false)
         return object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val joinMessage = joinGroupMessage(roomId)
+                val joinMessage = joinGroupMessage(connection.roomId)
                 val result = synchronized(lock) {
                     if (
-                        manuallyClosed ||
-                        generation != connectionGeneration ||
-                        activeWebSocket !== webSocket
+                        !isCurrent(connection) ||
+                        !bindSocket(connection, webSocket) ||
+                        connection.phase != ConnectionPhase.Connecting
                     ) {
                         OpenResult.Stale
                     } else {
                         reconnectAttempt = 0
                         reconnectJob = null
-                        if (webSocket.send(joinMessage)) {
+                        val sent = webSocket.send(joinMessage)
+                        if (
+                            !isCurrent(connection) ||
+                            connection.webSocket !== webSocket ||
+                            connection.phase != ConnectionPhase.Connecting
+                        ) {
+                            OpenResult.Stale
+                        } else if (sent) {
+                            connection.phase = ConnectionPhase.Connected
                             updateState(SocketConnectionState.Connected)
                             OpenResult.Connected
                         } else {
@@ -149,7 +154,7 @@ class OkHttpSocketClient internal constructor(
                     OpenResult.Stale -> webSocket.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
                     OpenResult.SendFailed -> {
                         webSocket.cancel()
-                        handleDisconnect(roomId, connectionGeneration, disconnected)
+                        handleDisconnect(connection, webSocket, disconnected)
                     }
                     OpenResult.Connected -> Unit
                 }
@@ -157,19 +162,19 @@ class OkHttpSocketClient internal constructor(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val isCurrent = synchronized(lock) {
-                    !manuallyClosed &&
-                        generation == connectionGeneration &&
-                        activeWebSocket === webSocket
+                    isCurrent(connection) &&
+                        connection.webSocket === webSocket &&
+                        connection.phase == ConnectionPhase.Connected
                 }
                 if (!isCurrent) {
                     return
                 }
-                val command = parser.parse(text, roomId) ?: return
+                val command = parser.parse(text, connection.roomId) ?: return
                 synchronized(lock) {
                     if (
-                        !manuallyClosed &&
-                        generation == connectionGeneration &&
-                        activeWebSocket === webSocket
+                        isCurrent(connection) &&
+                        connection.webSocket === webSocket &&
+                        connection.phase == ConnectionPhase.Connected
                     ) {
                         mutableCommands.tryEmit(command)
                     }
@@ -181,50 +186,71 @@ class OkHttpSocketClient internal constructor(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                handleDisconnect(roomId, connectionGeneration, disconnected)
+                handleDisconnect(connection, webSocket, disconnected)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 LOGGER.warning("WebSocket failure: ${t.javaClass.name}")
-                handleDisconnect(roomId, connectionGeneration, disconnected)
+                handleDisconnect(connection, webSocket, disconnected)
             }
         }
     }
 
     private fun handleDisconnect(
-        roomId: String,
-        connectionGeneration: Long,
+        connection: ConnectionContext,
+        webSocket: WebSocket,
         disconnected: AtomicBoolean,
     ) {
-        if (!disconnected.compareAndSet(false, true)) {
-            return
-        }
-
         synchronized(lock) {
-            if (manuallyClosed || generation != connectionGeneration || activeRoomId != roomId) {
+            if (
+                !isCurrent(connection) ||
+                !bindSocket(connection, webSocket) ||
+                !disconnected.compareAndSet(false, true)
+            ) {
                 return
             }
             generation++
             val reconnectGeneration = generation
-            activeWebSocket = null
+            connection.webSocket = null
+            connection.phase = ConnectionPhase.Reconnecting
             updateState(SocketConnectionState.Reconnecting)
             val attempt = reconnectAttempt++
             reconnectJob?.cancel()
             reconnectJob = scope.launch {
                 delay(reconnectPolicy.delayForAttempt(attempt, randomUnit()))
-                val nextGeneration = synchronized(lock) {
+                val nextConnection = synchronized(lock) {
                     if (
                         manuallyClosed ||
-                        activeRoomId != roomId ||
+                        activeConnection !== connection ||
                         generation != reconnectGeneration
                     ) {
                         return@launch
                     }
+                    val replacement = ConnectionContext(
+                        generation = ++generation,
+                        roomId = connection.roomId,
+                    )
+                    activeConnection = replacement
                     updateState(SocketConnectionState.Connecting)
-                    ++generation
+                    replacement
                 }
-                openWebSocket(roomId, nextGeneration)
+                openWebSocket(nextConnection)
             }
+        }
+    }
+
+    private fun isCurrent(connection: ConnectionContext): Boolean =
+        !manuallyClosed &&
+            activeConnection === connection &&
+            generation == connection.generation
+
+    private fun bindSocket(connection: ConnectionContext, webSocket: WebSocket): Boolean {
+        val registered = connection.webSocket
+        return if (registered == null) {
+            connection.webSocket = webSocket
+            true
+        } else {
+            registered === webSocket
         }
     }
 
@@ -251,5 +277,18 @@ class OkHttpSocketClient internal constructor(
         Stale,
         SendFailed,
         Connected,
+    }
+
+    private class ConnectionContext(
+        val generation: Long,
+        val roomId: String,
+        var webSocket: WebSocket? = null,
+        var phase: ConnectionPhase = ConnectionPhase.Connecting,
+    )
+
+    private enum class ConnectionPhase {
+        Connecting,
+        Connected,
+        Reconnecting,
     }
 }

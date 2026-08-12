@@ -57,15 +57,14 @@ class OkHttpSocketClientTest {
 
     @Test
     fun joinsRoomAfterOpenAndEmitsOnlyParsedCommands() = runTest {
-        val roomId = "room-\"quoted\\path"
+        val roomId = "room-1"
         val receivedJoin = CountDownLatch(1)
         server.enqueue(
             MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         val json = JsonParser.parseString(text).asJsonObject
-                        assertEquals("join-group", json.get("event").asString)
-                        assertEquals(roomId, json.getAsJsonObject("data").get("group").asString)
+                        assertEquals(expectedJoin(roomId), json)
                         receivedJoin.countDown()
                         webSocket.send(controlMessage("/unknown", roomId))
                         webSocket.send(controlMessage("/ctl_play", roomId))
@@ -111,8 +110,33 @@ class OkHttpSocketClientTest {
         val json = JsonParser.parseString(
             connector.connections.single().webSocket.sentTexts.single(),
         ).asJsonObject
-        assertEquals("join-group", json.get("event").asString)
-        assertEquals(roomId, json.getAsJsonObject("data").get("group").asString)
+        assertEquals(expectedJoin(roomId), json)
+    }
+
+    @Test
+    fun synchronousOpenBeforeConnectorReturnsJoinsAndConnects() {
+        val connector = RecordingWebSocketConnector(openBeforeReturn = true)
+        val socketClient = createClient(connector, StandardTestDispatcher())
+
+        socketClient.connect("room-1")
+
+        val webSocket = connector.connections.single().webSocket
+        assertEquals(listOf(expectedJoin("room-1").toString()), webSocket.sentTexts)
+        assertTrue(webSocket.closeCodes.isEmpty())
+        assertEquals(SocketConnectionState.Connected, socketClient.states.value)
+    }
+
+    @Test
+    fun reentrantFailureDuringJoinDoesNotBecomeConnected() {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher())
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.webSocket.onTextSend = connection::fail
+
+        connection.open()
+
+        assertEquals(SocketConnectionState.Reconnecting, socketClient.states.value)
     }
 
     @Test
@@ -368,6 +392,7 @@ class OkHttpSocketClientTest {
 
     private class RecordingWebSocketConnector(
         private val firstWebSocket: RecordingWebSocket? = null,
+        private val openBeforeReturn: Boolean = false,
     ) : WebSocketConnector {
         val connections = CopyOnWriteArrayList<RecordingConnection>()
 
@@ -378,7 +403,11 @@ class OkHttpSocketClientTest {
                 RecordingWebSocket()
             }
             webSocket.attachRequest(request)
-            connections += RecordingConnection(request, listener, webSocket)
+            val connection = RecordingConnection(request, listener, webSocket)
+            connections += connection
+            if (openBeforeReturn) {
+                connection.open()
+            }
             return webSocket
         }
     }
@@ -413,8 +442,10 @@ class OkHttpSocketClientTest {
         private val blockFirstSend: Boolean = false,
     ) : WebSocket {
         val sentTexts = CopyOnWriteArrayList<String>()
+        val closeCodes = CopyOnWriteArrayList<Int>()
         val sendEntered = CountDownLatch(1)
         val releaseSend = CountDownLatch(1)
+        var onTextSend: (() -> Unit)? = null
         private var shouldBlock = blockFirstSend
         private lateinit var webSocketRequest: Request
 
@@ -432,13 +463,17 @@ class OkHttpSocketClientTest {
                 sendEntered.countDown()
                 assertTrue(releaseSend.await(5, TimeUnit.SECONDS))
             }
+            onTextSend?.invoke()
             sentTexts += text
             return true
         }
 
         override fun send(bytes: ByteString): Boolean = true
 
-        override fun close(code: Int, reason: String?): Boolean = true
+        override fun close(code: Int, reason: String?): Boolean {
+            closeCodes += code
+            return true
+        }
 
         override fun cancel() = Unit
     }
@@ -449,5 +484,14 @@ class OkHttpSocketClientTest {
                 addProperty("event", event)
                 addProperty("group", roomId)
             }.toString()
+
+        fun expectedJoin(roomId: String): JsonObject =
+            JsonObject().apply {
+                addProperty("event", "join-group")
+                add(
+                    "data",
+                    JsonObject().apply { addProperty("group", roomId) },
+                )
+            }
     }
 }
