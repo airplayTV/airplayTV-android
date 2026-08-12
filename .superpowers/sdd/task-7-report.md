@@ -107,3 +107,44 @@ E:\cache\android-sdk\platform-tools\adb.exe devices
 - Task 7 新增和修改文件均为 UTF-8 无 BOM。
 - `git diff --check` 无空白错误。
 - MainActivity 和 Task 6 会话状态模型未改动。
+
+## 二次复审：房间切换二维码隔离
+
+### RED
+
+新增 `PairingQrImageTest`，要求异步结果只有在 `result.content == currentQrContent` 时才返回 Bitmap；结果缺失或 content 不匹配时必须返回 `null`，由页面显示 loading。
+
+运行：
+
+```powershell
+.\gradlew.bat testDebugUnitTest `
+  --tests com.airplay.tv.feature.pairing.PairingQrImageTest `
+  --no-parallel
+```
+
+编译按预期失败：`PairingQrImage` 和 `bitmapFor` 未定义。
+
+### GREEN
+
+- 新增泛型 `PairingQrImage<T>(content, bitmap)` 和 `bitmapFor(currentContent)` identity 过滤函数。
+- `produceState` 改为生成 `PairingQrImage<Bitmap>`，展示层仅接收 `generatedQrImage.bitmapFor(qrContent)`。
+- 房间从 A 切换到 B 时，即使 `produceState` 暂时保留 A 的旧 state，A 的 content 与当前 B 不匹配，二维码立即变为 `null/loading`。
+- 若旧生成任务非协作取消并迟到返回 A，identity 过滤仍禁止 A Bitmap 作为 B 房间二维码展示。
+
+focused test 随后通过。
+
+二次复审后强制重新执行：
+
+```powershell
+.\gradlew.bat compileDebugKotlin compileDebugAndroidTestKotlin testDebugUnitTest `
+  --rerun-tasks --no-parallel
+```
+
+结果：
+
+- `BUILD SUCCESSFUL`
+- 30 个 Gradle task 全部重新执行
+- 12 个 JVM test suite，69 个测试，0 failure，0 error
+- `compileDebugKotlin` 成功
+- `compileDebugAndroidTestKotlin` 成功
+- `adb devices` 仍为空，未运行 `connectedDebugAndroidTest`

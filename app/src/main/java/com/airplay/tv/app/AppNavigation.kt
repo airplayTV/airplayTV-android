@@ -12,8 +12,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.airplay.tv.feature.pairing.PairingQrContentCache
+import com.airplay.tv.feature.pairing.PairingQrImage
 import com.airplay.tv.feature.pairing.PairingScreen
 import com.airplay.tv.feature.pairing.QrCodeGenerator
+import com.airplay.tv.feature.pairing.bitmapFor
 import com.airplay.tv.feature.player.PlayerScreen
 import com.airplay.tv.session.SessionPage
 import com.airplay.tv.session.SessionUiState
@@ -31,11 +33,18 @@ fun AppNavigation(
     val qrContent = remember(state.roomId) {
         qrContentCache.contentFor(state.roomId)
     }
-    val qrCode by produceState<Bitmap?>(initialValue = null, qrContent) {
+    val generatedQrImage by produceState<PairingQrImage<Bitmap>?>(
+        initialValue = null,
+        qrContent,
+    ) {
         value = withContext(Dispatchers.Default) {
-            QrCodeGenerator().generate(qrContent, QR_CODE_PIXELS)
+            PairingQrImage(
+                content = qrContent,
+                bitmap = QrCodeGenerator().generate(qrContent, QR_CODE_PIXELS),
+            )
         }
     }
+    val qrCode = generatedQrImage.bitmapFor(qrContent)
     val targetRoute = when (state.page) {
         SessionPage.Pairing -> AppRoute.Pairing.route
         SessionPage.Player -> AppRoute.Player.route
