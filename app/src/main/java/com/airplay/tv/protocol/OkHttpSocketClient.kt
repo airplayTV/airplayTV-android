@@ -7,6 +7,7 @@ import java.util.logging.Logger
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -201,7 +202,7 @@ class OkHttpSocketClient internal constructor(
         webSocket: WebSocket,
         disconnected: AtomicBoolean,
     ) {
-        synchronized(lock) {
+        val scheduledReconnect = synchronized(lock) {
             if (
                 !isCurrent(connection) ||
                 !bindSocket(connection, webSocket) ||
@@ -213,10 +214,9 @@ class OkHttpSocketClient internal constructor(
             val reconnectGeneration = generation
             connection.webSocket = null
             connection.phase = ConnectionPhase.Reconnecting
-            updateState(SocketConnectionState.Reconnecting)
             val attempt = reconnectAttempt++
             reconnectJob?.cancel()
-            reconnectJob = scope.launch {
+            val job = scope.launch(start = CoroutineStart.LAZY) {
                 delay(reconnectPolicy.delayForAttempt(attempt, randomUnit()))
                 val nextConnection = synchronized(lock) {
                     if (
@@ -236,7 +236,11 @@ class OkHttpSocketClient internal constructor(
                 }
                 openWebSocket(nextConnection)
             }
+            reconnectJob = job
+            updateState(SocketConnectionState.Reconnecting)
+            job
         }
+        scheduledReconnect.start()
     }
 
     private fun isCurrent(connection: ConnectionContext): Boolean =

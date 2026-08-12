@@ -13,8 +13,11 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -261,6 +264,39 @@ class OkHttpSocketClientTest {
     }
 
     @Test
+    fun reentrantRoomSwitchWithSynchronousFailureKeepsNewReconnect() = runTest {
+        val connector = RecordingWebSocketConnector(failBeforeReturnIndices = setOf(1))
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        var switchedRoom = false
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            socketClient.states.collect { state ->
+                if (state == SocketConnectionState.Reconnecting && !switchedRoom) {
+                    switchedRoom = true
+                    socketClient.connect("new-room")
+                }
+            }
+        }
+        socketClient.connect("old-room")
+
+        connector.connections.single().fail()
+
+        assertTrue(switchedRoom)
+        assertEquals(2, connector.connections.size)
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(2, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(3, connector.connections.size)
+        connector.connections.last().open()
+        assertEquals(
+            listOf(expectedJoin("new-room").toString()),
+            connector.connections.last().webSocket.sentTexts,
+        )
+        collector.cancel()
+    }
+
+    @Test
     fun failureEntersReconnectingAndSchedulesNextConnection() = runTest {
         server.enqueue(MockResponse().setResponseCode(500))
         server.enqueue(webSocketResponse())
@@ -393,10 +429,12 @@ class OkHttpSocketClientTest {
     private class RecordingWebSocketConnector(
         private val firstWebSocket: RecordingWebSocket? = null,
         private val openBeforeReturn: Boolean = false,
+        private val failBeforeReturnIndices: Set<Int> = emptySet(),
     ) : WebSocketConnector {
         val connections = CopyOnWriteArrayList<RecordingConnection>()
 
         override fun connect(request: Request, listener: WebSocketListener): WebSocket {
+            val connectionIndex = connections.size
             val webSocket = if (connections.isEmpty() && firstWebSocket != null) {
                 firstWebSocket
             } else {
@@ -407,6 +445,9 @@ class OkHttpSocketClientTest {
             connections += connection
             if (openBeforeReturn) {
                 connection.open()
+            }
+            if (connectionIndex in failBeforeReturnIndices) {
+                connection.fail()
             }
             return webSocket
         }
