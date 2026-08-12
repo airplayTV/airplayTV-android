@@ -6,6 +6,7 @@ local.properties
 
 *.bak
 .codex/
+.worktrees/
 build_output.txt
 build/
 
