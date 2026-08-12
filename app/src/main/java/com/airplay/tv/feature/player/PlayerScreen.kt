@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.airplay.tv.feature.pairing.ConnectionStatus
@@ -33,6 +34,7 @@ import com.airplay.tv.session.SessionUiState
 import java.util.Locale
 
 @Composable
+@androidx.annotation.OptIn(UnstableApi::class)
 fun PlayerScreen(
     state: SessionUiState,
     player: Player,

@@ -9,6 +9,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +19,7 @@ private const val POSITION_UPDATE_INTERVAL_MS = 500L
 private const val PLAYBACK_ERROR_MESSAGE = "播放失败，请稍后重试"
 
 @MainThread
+@androidx.annotation.OptIn(UnstableApi::class)
 class Media3PlayerController(context: Context) : PlayerController {
     init {
         checkMainThread()
