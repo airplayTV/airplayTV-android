@@ -85,9 +85,26 @@ class OkHttpSocketClientTest {
 
         socketClient.connect(roomId)
 
-        assertEquals(ControlCommand.Play, command.await())
+        assertEquals(ControlCommand.Play, command.await().command)
         assertTrue(receivedJoin.await(5, TimeUnit.SECONDS))
         assertEquals(SocketConnectionState.Connected, socketClient.states.value)
+    }
+
+    @Test
+    fun emittedCommandCarriesTheCurrentConnectionGeneration() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val received = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+        connection.message(controlMessage("/ctl_play", "room-1"))
+
+        assertEquals(
+            ReceivedControlCommand(ControlCommand.Play, socketClient.connectionGeneration.value),
+            received.await(),
+        )
     }
 
     @Test
@@ -161,7 +178,7 @@ class OkHttpSocketClientTest {
 
         newConnection.open()
         newConnection.message("""{"event":"/ctl_pause","group":"new-room"}""")
-        assertEquals(ControlCommand.Pause, command.await())
+        assertEquals(ControlCommand.Pause, command.await().command)
     }
 
     @Test
@@ -315,7 +332,7 @@ class OkHttpSocketClientTest {
         val received = mutableListOf<ControlCommand>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             socketClient.commands.collect { command ->
-                received += command
+                received += command.command
                 if (received.size == 1) releaseFirst.await()
             }
         }

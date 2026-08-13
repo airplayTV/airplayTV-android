@@ -3,6 +3,7 @@ package com.airplay.tv.session
 import com.airplay.tv.feature.player.ApiResponse
 import com.airplay.tv.feature.player.FakePlayerController
 import com.airplay.tv.feature.player.PlayerState
+import com.airplay.tv.feature.player.RemoteControlAction
 import com.airplay.tv.feature.player.ResolvedMediaType
 import com.airplay.tv.feature.player.VideoApi
 import com.airplay.tv.feature.player.VideoDetailDto
@@ -10,6 +11,7 @@ import com.airplay.tv.feature.player.VideoLinkDto
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.feature.player.VideoSourceDto
 import com.airplay.tv.protocol.ControlCommand
+import com.airplay.tv.protocol.ReceivedControlCommand
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
 import kotlinx.coroutines.CancellationException
@@ -322,8 +324,11 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun mapsPlaybackVolumeMuteAndQrCommands() = runTest(dispatcher) {
+    fun mapsPlaybackVolumeMuteAndQrCommandsWithoutClearingPlayback() = runTest(dispatcher) {
         startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.clearCalls()
 
         socket.emit(ControlCommand.Play)
         socket.emit(ControlCommand.Pause)
@@ -338,13 +343,14 @@ class SessionViewModelTest {
             playerController.calls,
         )
         assertTrue(viewModel.uiState.value.infoVisible)
+        playerController.clearCalls()
 
         socket.emit(ControlCommand.ShowQrCode)
         runCurrent()
 
-        assertEquals("clear", playerController.calls.last())
-        assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
-        assertFalse(viewModel.uiState.value.infoVisible)
+        assertTrue(viewModel.uiState.value.qrVisible)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+        assertTrue(playerController.calls.isEmpty())
     }
 
     @Test
@@ -500,7 +506,7 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun showQrCancelsLoadAndDiscardsPendingControls() = runTest(dispatcher) {
+    fun showQrDuringLoadPreservesLoadAndPendingControls() = runTest(dispatcher) {
         api.sourceResponse = { vid, pid ->
             withContext(NonCancellable) { delay(1_000) }
             successfulSource("https://cdn/$vid-$pid.m3u8")
@@ -514,8 +520,98 @@ class SessionViewModelTest {
         runCurrent()
         advanceUntilIdle()
 
-        assertEquals(listOf("clear"), playerController.calls)
+        assertEquals(listOf("load:https://cdn/slow-p1.m3u8", "pause"), playerController.calls)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+        assertTrue(viewModel.uiState.value.qrVisible)
+    }
+
+    @Test
+    fun remoteControlsUseSamePlayerPathAsSocketControls() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.clearCalls()
+
+        viewModel.onRemoteControl(RemoteControlAction.Play)
+        viewModel.onRemoteControl(RemoteControlAction.Pause)
+        viewModel.onRemoteControl(RemoteControlAction.Forward)
+        viewModel.onRemoteControl(RemoteControlAction.Back)
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+        viewModel.onRemoteControl(RemoteControlAction.TogglePlayPause)
+
+        assertEquals(
+            listOf("play", "pause", "seek:15000", "seek:-15000", "play"),
+            playerController.calls,
+        )
+    }
+
+    @Test
+    fun backClosesQrBeforeInfoOrPlayer() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        socket.emit(ControlCommand.ShowQrCode)
+        runCurrent()
+        playerController.clearCalls()
+
+        viewModel.onBack()
+
+        assertFalse(viewModel.uiState.value.qrVisible)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+        assertTrue(playerController.calls.isEmpty())
+    }
+
+    @Test
+    fun acceptedResolutionPublishesAndClearRemovesPlaybackUrl() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+
+        assertEquals("https://cdn/video-p1.m3u8", viewModel.uiState.value.playbackUrl)
+
+        viewModel.onBack()
+
         assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
+        assertEquals("", viewModel.uiState.value.playbackUrl)
+    }
+
+    @Test
+    fun diagnosticLogHidesFiveSecondsAfterLatestEvent() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(ControlCommand.Play)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.diagnosticVisible)
+
+        advanceTimeBy(4_999)
+        runCurrent()
+        socket.emit(ControlCommand.Pause)
+        runCurrent()
+        advanceTimeBy(4_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.diagnosticVisible)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.diagnosticVisible)
+        assertTrue(viewModel.uiState.value.diagnosticLogs.isNotEmpty())
+    }
+
+    @Test
+    fun diagnosticAndPlayerInfoTimersDoNotCancelEachOther() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(ControlCommand.Play)
+        runCurrent()
+        advanceTimeBy(4_000)
+        runCurrent()
+
+        socket.mutableStates.value = SocketConnectionState.Reconnecting
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.infoVisible)
+        assertTrue(viewModel.uiState.value.diagnosticVisible)
     }
 
     @Test
@@ -770,7 +866,15 @@ class SessionViewModelTest {
             socket.emit(ControlCommand.Previous)
             runCurrent()
 
-            assertEquals(beforeBoundary, viewModel.uiState.value)
+            val afterBoundary = viewModel.uiState.value
+            assertEquals(
+                beforeBoundary,
+                afterBoundary.copy(
+                    diagnosticLogs = beforeBoundary.diagnosticLogs,
+                    diagnosticVisible = beforeBoundary.diagnosticVisible,
+                ),
+            )
+            assertEquals("上一集", afterBoundary.diagnosticLogs.last().message)
             assertTrue(playerController.calls.isEmpty())
         }
 
@@ -829,6 +933,113 @@ class SessionViewModelTest {
         assertEquals(30_000, viewModel.uiState.value.durationMs)
         assertEquals("播放失败，请稍后重试", viewModel.uiState.value.error)
         assertSame(playerController.player, viewModel.player)
+    }
+
+    @Test
+    fun controllerConnectionTracksAcceptedCommandsAndSocketLifecycle() = runTest(dispatcher) {
+        startCollectors()
+
+        assertFalse(viewModel.uiState.value.controllerConnected)
+        socket.mutableStates.value = SocketConnectionState.Connected
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+
+        socket.emit(ControlCommand.HistoryIgnored)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.controllerConnected)
+        assertTrue(playerController.calls.isEmpty())
+
+        socket.mutableStates.value = SocketConnectionState.Reconnecting
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+        socket.mutableStates.value = SocketConnectionState.Connecting
+        runCurrent()
+        socket.mutableStates.value = SocketConnectionState.Connected
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+
+        socket.emit(ControlCommand.Play)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.controllerConnected)
+
+        socket.mutableStates.value = SocketConnectionState.Closed
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+    }
+
+    @Test
+    fun repeatedPairHeartbeatsAreIdempotentAndDoNotControlPlayback() = runTest(dispatcher) {
+        startCollectors()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.controllerConnected)
+        assertEquals("手机控制器已关联", viewModel.uiState.value.diagnosticLogs.last().message)
+        assertTrue(playerController.calls.isEmpty())
+    }
+
+    @Test
+    fun unpairOnlyClearsControllerAssociationAndPreservesPlaybackState() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 12_000, durationMs = 30_000),
+        )
+        runCurrent()
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        playerController.clearCalls()
+        val before = viewModel.uiState.value
+
+        socket.emit(ControlCommand.ControllerUnpaired)
+        runCurrent()
+
+        val after = viewModel.uiState.value
+        assertFalse(after.controllerConnected)
+        assertEquals("手机控制器已断开", after.diagnosticLogs.last().message)
+        assertEquals(
+            before,
+            after.copy(
+                controllerConnected = before.controllerConnected,
+                diagnosticLogs = before.diagnosticLogs,
+                diagnosticVisible = before.diagnosticVisible,
+            ),
+        )
+        assertTrue(playerController.calls.isEmpty())
+    }
+
+    @Test
+    fun newConnectionGenerationClearsAssociationAndRejectsQueuedOldCommands() = runTest(dispatcher) {
+        socket.mutableConnectionGeneration.value = 1L
+        startCollectors()
+        socket.mutableStates.value = SocketConnectionState.Connected
+        runCurrent()
+        socket.emit(ControlCommand.ControllerPaired, generation = 1L)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.controllerConnected)
+
+        socket.mutableConnectionGeneration.value = 2L
+        socket.mutableStates.value = SocketConnectionState.Reconnecting
+        socket.mutableStates.value = SocketConnectionState.Connecting
+        socket.mutableStates.value = SocketConnectionState.Connected
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+
+        socket.emit(ControlCommand.Play, generation = 1L)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.controllerConnected)
+        assertTrue(playerController.calls.isEmpty())
+
+        socket.emit(ControlCommand.ControllerPaired, generation = 2L)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.controllerConnected)
     }
 
     @Test
@@ -958,15 +1169,20 @@ class SessionViewModelTest {
 
     private class FakeSocketClient : SocketClient {
         val mutableStates = MutableStateFlow(SocketConnectionState.Connecting)
-        private val mutableCommands = MutableSharedFlow<ControlCommand>(extraBufferCapacity = 32)
+        val mutableConnectionGeneration = MutableStateFlow(0L)
+        private val mutableCommands = MutableSharedFlow<ReceivedControlCommand>(extraBufferCapacity = 32)
         val connectedRooms = mutableListOf<String>()
         var closeCalls = 0
 
         override val states: StateFlow<SocketConnectionState> = mutableStates
-        override val commands: Flow<ControlCommand> = mutableCommands
+        override val connectionGeneration: StateFlow<Long> = mutableConnectionGeneration
+        override val commands: Flow<ReceivedControlCommand> = mutableCommands
 
-        suspend fun emit(command: ControlCommand) {
-            mutableCommands.emit(command)
+        suspend fun emit(
+            command: ControlCommand,
+            generation: Long = mutableConnectionGeneration.value,
+        ) {
+            mutableCommands.emit(ReceivedControlCommand(command, generation))
         }
 
         override fun connect(roomId: String) {

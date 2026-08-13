@@ -49,6 +49,8 @@ class SocketMessageParser {
             "/ctl_history" -> ControlCommand.HistoryIgnored
             "/ctl_prev" -> ControlCommand.Previous
             "/ctl_next" -> ControlCommand.Next
+            "/ctl_pair" -> ControlCommand.ControllerPaired
+            "/ctl_unpair" -> ControlCommand.ControllerUnpaired
             else -> null
         }
     }
@@ -73,12 +75,7 @@ class SocketMessageParser {
         return value.asString
     }
 
-    private fun JsonObject.optionalMode(): String? {
-        if (has("mode") && get("mode").isJsonNull) {
-            throw JsonParseException("mode must be a string")
-        }
-        return optionalString("mode")
-    }
+    private fun JsonObject.optionalMode(): String? = optionalString("mode")
 
     private fun JsonObject.optionalInt(name: String): Int? {
         val value = get(name) ?: return null

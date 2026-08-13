@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
                 state = state,
                 player = sessionViewModel.player,
                 onBack = sessionViewModel::onBack,
+                onRemoteControl = sessionViewModel::onRemoteControl,
             )
         }
     }

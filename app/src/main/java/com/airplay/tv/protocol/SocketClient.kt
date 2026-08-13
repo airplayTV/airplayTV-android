@@ -12,9 +12,15 @@ enum class SocketConnectionState {
     Closed,
 }
 
+data class ReceivedControlCommand(
+    val command: ControlCommand,
+    val generation: Long,
+)
+
 interface SocketClient : Closeable {
     val states: StateFlow<SocketConnectionState>
-    val commands: Flow<ControlCommand>
+    val connectionGeneration: StateFlow<Long>
+    val commands: Flow<ReceivedControlCommand>
 
     fun connect(roomId: String)
 

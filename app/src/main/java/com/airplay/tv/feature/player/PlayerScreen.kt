@@ -1,6 +1,7 @@
 package com.airplay.tv.feature.player
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.CircularProgressIndicator
@@ -20,9 +22,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,13 +73,15 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (state.infoVisible) {
-            ConnectionStatus(
-                connection = state.connection,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 40.dp, end = 48.dp),
-            )
+        ConnectionStatus(
+            connection = state.connection,
+            controllerConnected = state.controllerConnected,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 40.dp, end = 48.dp),
+        )
+
+        if (shouldShowPlaybackInfo(state)) {
             PlayerInfoOverlay(
                 state = state,
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -93,6 +104,9 @@ fun PlayerScreen(
 internal fun shouldShowLoadingOverlay(state: SessionUiState): Boolean =
     state.loading && state.error == null
 
+internal fun shouldShowPlaybackInfo(state: SessionUiState): Boolean =
+    state.infoVisible
+
 @Composable
 private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifier) {
     Column(
@@ -106,34 +120,50 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
             .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 40.dp)
             .testTag("player-info-overlay"),
     ) {
-        Text(
-            text = state.title.ifBlank { "正在播放" },
-            color = Color.White,
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (state.episodeName.isNotBlank()) {
-            Text(
-                text = state.episodeName,
-                modifier = Modifier.padding(top = 6.dp),
-                color = Color(0xFFC5CDD8),
-                fontSize = 18.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = state.title.ifBlank { "正在播放" },
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (state.episodeName.isNotBlank()) {
+                    Text(
+                        text = state.episodeName,
+                        modifier = Modifier.padding(top = 6.dp),
+                        color = Color(0xFFC5CDD8),
+                        fontSize = 18.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (state.playbackUrl.isNotBlank()) {
+                Text(
+                    text = state.playbackUrl,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 24.dp),
+                    color = Color(0xFF9DAAB9),
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         Row(
             modifier = Modifier.padding(top = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (state.isPlaying) "播放中" else "已暂停",
-                color = MaterialTheme.colorScheme.primary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
+            PlaybackStateIcon(
+                isPlaying = state.isPlaying,
+                modifier = Modifier.testTag("playback-state-icon"),
             )
             Spacer(Modifier.width(18.dp))
             Text(
@@ -158,6 +188,39 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
 }
 
 @Composable
+private fun PlaybackStateIcon(
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(
+        modifier = modifier
+            .size(22.dp)
+            .semantics {
+                contentDescription = if (isPlaying) "暂停" else "播放"
+            },
+    ) {
+        if (isPlaying) {
+            val barWidth = size.width * 0.28f
+            drawRect(color = color, size = Size(barWidth, size.height))
+            drawRect(
+                color = color,
+                topLeft = Offset(size.width - barWidth, 0f),
+                size = Size(barWidth, size.height),
+            )
+        } else {
+            val path = Path().apply {
+                moveTo(0f, 0f)
+                lineTo(size.width, size.height / 2f)
+                lineTo(0f, size.height)
+                close()
+            }
+            drawPath(path = path, color = color)
+        }
+    }
+}
+
+@Composable
 private fun PlaybackProgress(
     positionMs: Long,
     durationMs: Long,
@@ -171,7 +234,8 @@ private fun PlaybackProgress(
     Box(
         modifier = modifier
             .height(5.dp)
-            .background(Color(0xFF4A515C)),
+            .background(Color(0xFF4A515C))
+            .testTag("player-progress"),
     ) {
         Box(
             modifier = Modifier

@@ -24,7 +24,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.airplay.tv.protocol.SocketConnectionState
@@ -54,7 +56,8 @@ fun PairingScreen(
                     .aspectRatio(1f)
                     .clip(MaterialTheme.shapes.large)
                     .background(Color.White)
-                    .padding(18.dp),
+                    .padding(18.dp)
+                    .testTag("pairing-qr-container"),
                 contentAlignment = Alignment.Center,
             ) {
                 val bitmap = qrCode
@@ -99,11 +102,24 @@ fun PairingScreen(
                 PairingStep(index = "01", text = "打开手机相机或扫码工具")
                 PairingStep(index = "02", text = "扫描左侧二维码进入投屏页")
                 PairingStep(index = "03", text = "选择视频并发送到电视")
+                Text(
+                    text = "房间号：${state.roomId}",
+                    modifier = Modifier
+                        .padding(top = 20.dp)
+                        .testTag("pairing-room-id"),
+                    color = Color(0xFFBBC4D0),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 18.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                )
             }
         }
 
         ConnectionStatus(
             connection = state.connection,
+            controllerConnected = state.controllerConnected,
             modifier = Modifier.align(Alignment.BottomEnd),
         )
     }
@@ -141,20 +157,26 @@ private fun PairingStep(index: String, text: String) {
 @Composable
 fun ConnectionStatus(
     connection: SocketConnectionState,
+    controllerConnected: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val (label, color) = when (connection) {
-        SocketConnectionState.Connecting -> "正在连接服务" to Color(0xFFFFC857)
-        SocketConnectionState.Connected -> "已连接 · 等待投屏" to Color(0xFF56E39F)
-        SocketConnectionState.Reconnecting -> "连接中断 · 正在重连" to Color(0xFFFFC857)
-        SocketConnectionState.Closed -> "连接已断开" to Color(0xFFFF7B7B)
+        SocketConnectionState.Connecting -> "连接中" to Color(0xFFFFC857)
+        SocketConnectionState.Connected -> if (controllerConnected) {
+            "已连接" to Color(0xFF56E39F)
+        } else {
+            "等待连接" to Color(0xFFFFC857)
+        }
+        SocketConnectionState.Reconnecting -> "重连中" to Color(0xFFFFC857)
+        SocketConnectionState.Closed -> "已断开" to Color(0xFFFF7B7B)
     }
 
     Row(
         modifier = modifier
             .clip(MaterialTheme.shapes.large)
             .background(Color(0xCC151D29))
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .testTag("connection-status"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(

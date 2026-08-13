@@ -60,6 +60,9 @@ class Media3PlaybackLogicTest {
         assertEquals(7, calculateRestoreVolume(lastAudibleVolume = 7, maxVolume = 10))
         assertEquals(4, calculateRestoreVolume(lastAudibleVolume = 7, maxVolume = 4))
         assertEquals(0, calculateRestoreVolume(lastAudibleVolume = 7, maxVolume = 0))
+        assertEquals(1, calculateRestoreVolume(lastAudibleVolume = 1, maxVolume = 10))
+        assertEquals(0, calculateRestoreVolume(lastAudibleVolume = 1, maxVolume = 0))
+        assertEquals(0, calculateRestoreVolume(lastAudibleVolume = -1, maxVolume = 10))
     }
 
     @Test

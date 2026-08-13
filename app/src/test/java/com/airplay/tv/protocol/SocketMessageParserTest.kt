@@ -15,7 +15,7 @@ class SocketMessageParserTest {
 
         assertEquals(ControlCommand.LoadVideo("v1", "p2", "s", "m"), parser.parse(withMode, "room-1"))
         assertEquals(ControlCommand.LoadVideo("v1", "p2", "s", ""), parser.parse(withoutMode, "room-1"))
-        assertNull(parser.parse(nullMode, "room-1"))
+        assertEquals(ControlCommand.LoadVideo("v1", "p2", "s", ""), parser.parse(nullMode, "room-1"))
     }
 
     @Test
@@ -45,6 +45,25 @@ class SocketMessageParserTest {
     }
 
     @Test
+    fun parsesPairCommandOnlyForCurrentRoom() {
+        assertEquals(
+            ControlCommand.ControllerPaired,
+            parser.parse("""{"event":"/ctl_pair","group":"room-1"}""", "room-1"),
+        )
+        assertNull(parser.parse("""{"event":"/ctl_pair","group":"other"}""", "room-1"))
+    }
+
+    @Test
+    fun parsesUnpairCommandOnlyForCurrentRoom() {
+        assertEquals(
+            ControlCommand.ControllerUnpaired,
+            parser.parse("""{"event":"/ctl_unpair","group":"room-1"}""", "room-1"),
+        )
+        assertNull(parser.parse("""{"event":"/ctl_unpair","group":"other"}""", "room-1"))
+        assertNull(parser.parse("""{"event":"/ctl_unpair"}""", "room-1"))
+    }
+
+    @Test
     fun rejectsMessagesOutsideCurrentRoomOrWithInvalidPayload() {
         val oversized = "x".repeat(513)
 
@@ -52,6 +71,7 @@ class SocketMessageParserTest {
         assertNull(parser.parse("""{"event":"/ctl_load_Video","group":"room-1","vid":"$oversized","pid":"p","source":"s"}""", "room-1"))
         assertNull(parser.parse("""{"event":"/ctl_load_Video","group":"room-1","vid":"","pid":"p","source":"s"}""", "room-1"))
         assertNull(parser.parse("""{"event":"/ctl_load_Video","group":"room-1","vid":"v","pid":"p","source":"s","mode":"$oversized"}""", "room-1"))
+        assertNull(parser.parse("""{"event":"/ctl_load_Video","group":"room-1","vid":"v","pid":"p","source":"s","mode":1}""", "room-1"))
         assertNull(parser.parse("""{"event":"/ctl_volume","group":"room-1","value":0}""", "room-1"))
         assertNull(parser.parse("""{"event":"/ctl_volume","group":"room-1","value":"1"}""", "room-1"))
         assertNull(parser.parse("""{"event":"/ctl_delete","group":"room-1"}""", "room-1"))

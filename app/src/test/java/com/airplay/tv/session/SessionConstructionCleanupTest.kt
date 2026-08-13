@@ -2,7 +2,7 @@ package com.airplay.tv.session
 
 import com.airplay.tv.feature.player.FakePlayerController
 import com.airplay.tv.feature.player.PlayerController
-import com.airplay.tv.protocol.ControlCommand
+import com.airplay.tv.protocol.ReceivedControlCommand
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
 import kotlinx.coroutines.flow.Flow
@@ -56,7 +56,8 @@ class SessionConstructionCleanupTest {
     ) : SocketClient {
         override val states: StateFlow<SocketConnectionState> =
             MutableStateFlow(SocketConnectionState.Closed)
-        override val commands: Flow<ControlCommand> = emptyFlow()
+        override val connectionGeneration: StateFlow<Long> = MutableStateFlow(0L)
+        override val commands: Flow<ReceivedControlCommand> = emptyFlow()
 
         override fun connect(roomId: String) = Unit
 

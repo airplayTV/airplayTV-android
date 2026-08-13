@@ -3,12 +3,17 @@ package com.airplay.tv.session
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.Player
+import com.airplay.tv.diagnostics.DiagnosticLogEntry
+import com.airplay.tv.diagnostics.appendDiagnostic
+import com.airplay.tv.diagnostics.toDiagnosticLog
 import com.airplay.tv.feature.player.Episode
 import com.airplay.tv.feature.player.PlayerController
+import com.airplay.tv.feature.player.RemoteControlAction
 import com.airplay.tv.feature.player.VideoDetails
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.protocol.ControlCommand
 import com.airplay.tv.protocol.SocketClient
+import com.airplay.tv.protocol.SocketConnectionState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -35,6 +40,7 @@ class SessionViewModel(
     private var resolveJob: Job? = null
     private var detailJob: Job? = null
     private var overlayJob: Job? = null
+    private var diagnosticOverlayJob: Job? = null
     private var pendingLoad: PendingLoad? = null
     private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
@@ -45,12 +51,35 @@ class SessionViewModel(
     private var isForeground = false
     private var pendingForegroundPlayIntent: Boolean? = null
     private var overlayRevision = 0L
+    private var diagnosticRevision = 0L
     private var cleared = false
 
     init {
         viewModelScope.launch {
             socketClient.states.collect { connection ->
-                mutableUiState.update { it.copy(connection = connection) }
+                val previousConnection = mutableUiState.value.connection
+                mutableUiState.update { state ->
+                    state.copy(
+                        connection = connection,
+                        controllerConnected = when (connection) {
+                            SocketConnectionState.Reconnecting,
+                            SocketConnectionState.Closed,
+                            -> false
+
+                            SocketConnectionState.Connecting,
+                            SocketConnectionState.Connected,
+                            -> state.controllerConnected
+                        },
+                    )
+                }
+                if (connection != previousConnection) {
+                    appendDiagnostic(connection.toDiagnosticLog())
+                }
+            }
+        }
+        viewModelScope.launch {
+            socketClient.connectionGeneration.collect {
+                mutableUiState.update { it.copy(controllerConnected = false) }
             }
         }
         viewModelScope.launch {
@@ -66,16 +95,27 @@ class SessionViewModel(
             }
         }
         viewModelScope.launch {
-            socketClient.commands.collect(::handleCommand)
+            socketClient.commands.collect { received ->
+                if (received.generation != socketClient.connectionGeneration.value) {
+                    return@collect
+                }
+                val command = received.command
+                if (command != ControlCommand.HistoryIgnored) {
+                    appendDiagnostic(command.toDiagnosticLog())
+                }
+                handleCommand(command)
+            }
         }
         socketClient.connect(roomId)
     }
 
     fun onBack() {
-        if (mutableUiState.value.infoVisible) {
-            hideInfo()
-        } else if (mutableUiState.value.page == SessionPage.Player) {
-            showPairingPage()
+        when {
+            mutableUiState.value.qrVisible -> {
+                mutableUiState.update { it.copy(qrVisible = false) }
+            }
+            mutableUiState.value.infoVisible -> hideInfo()
+            mutableUiState.value.page == SessionPage.Player -> showPairingPage()
         }
     }
 
@@ -118,6 +158,9 @@ class SessionViewModel(
         cleared = true
         invalidateLoads()
         overlayJob?.cancel()
+        diagnosticRevision += 1
+        diagnosticOverlayJob?.cancel()
+        diagnosticOverlayJob = null
         viewModelScope.cancel()
         try {
             socketClient.close()
@@ -128,6 +171,13 @@ class SessionViewModel(
     }
 
     private fun handleCommand(command: ControlCommand) {
+        if (
+            command != ControlCommand.HistoryIgnored &&
+            command != ControlCommand.ControllerUnpaired
+        ) {
+            mutableUiState.update { it.copy(controllerConnected = true) }
+        }
+
         when (command) {
             is ControlCommand.LoadVideo -> loadVideo(command)
             is ControlCommand.Volume -> playbackControl {
@@ -141,9 +191,13 @@ class SessionViewModel(
             ControlCommand.Fullscreen -> hideInfo()
             ControlCommand.FullscreenExit -> showInfoTemporarily()
             ControlCommand.ToggleInfo -> toggleInfo()
-            ControlCommand.ShowQrCode -> showPairingPage()
+            ControlCommand.ShowQrCode -> showQrOverlay()
             ControlCommand.Previous -> loadAdjacentEpisode(-1)
             ControlCommand.Next -> loadAdjacentEpisode(1)
+            ControlCommand.ControllerPaired -> Unit
+            ControlCommand.ControllerUnpaired -> {
+                mutableUiState.update { it.copy(controllerConnected = false) }
+            }
             ControlCommand.HistoryIgnored -> Unit
         }
     }
@@ -176,6 +230,8 @@ class SessionViewModel(
                 } else {
                     ""
                 },
+                playbackUrl = if (preserveEpisodes) it.playbackUrl else "",
+                qrVisible = false,
                 error = null,
             )
         }
@@ -240,6 +296,7 @@ class SessionViewModel(
                                 .orEmpty()
                         }
                         .ifEmpty { it.episodeName },
+                    playbackUrl = resolved.url,
                     error = playerController.state.value.error,
                 )
             }
@@ -358,6 +415,46 @@ class SessionViewModel(
         mutableUiState.update { it.copy(infoVisible = false) }
     }
 
+    fun onRemoteControl(action: RemoteControlAction) {
+        if (mutableUiState.value.page != SessionPage.Player) return
+
+        val control = when (action) {
+            RemoteControlAction.Play -> MediaControl.Play
+            RemoteControlAction.Pause -> MediaControl.Pause
+            RemoteControlAction.TogglePlayPause -> if (mutableUiState.value.isPlaying) {
+                MediaControl.Pause
+            } else {
+                MediaControl.Play
+            }
+            RemoteControlAction.Forward -> MediaControl.Forward
+            RemoteControlAction.Back -> MediaControl.Back
+        }
+        handleMediaControl(control)
+    }
+
+    private fun appendDiagnostic(entry: DiagnosticLogEntry) {
+        val revision = ++diagnosticRevision
+        diagnosticOverlayJob?.cancel()
+        mutableUiState.update {
+            it.copy(
+                diagnosticLogs = it.diagnosticLogs.appendDiagnostic(entry),
+                diagnosticVisible = true,
+            )
+        }
+        diagnosticOverlayJob = viewModelScope.launch {
+            delay(DIAGNOSTIC_TIMEOUT_MS)
+            if (revision == diagnosticRevision) {
+                mutableUiState.update { it.copy(diagnosticVisible = false) }
+            }
+        }
+    }
+
+    private fun showQrOverlay() {
+        if (mutableUiState.value.page == SessionPage.Player) {
+            mutableUiState.update { it.copy(qrVisible = true) }
+        }
+    }
+
     private fun showPairingPage() {
         invalidateLoads()
         hideInfo()
@@ -375,6 +472,9 @@ class SessionViewModel(
                 loading = false,
                 title = "",
                 episodeName = "",
+                playbackUrl = "",
+                qrVisible = false,
+                diagnosticVisible = false,
                 error = null,
             )
         }
@@ -452,6 +552,7 @@ class SessionViewModel(
     private companion object {
         const val SEEK_STEP_MS = 15_000L
         const val INFO_TIMEOUT_MS = 5_000L
+        const val DIAGNOSTIC_TIMEOUT_MS = 5_000L
         const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"
     }

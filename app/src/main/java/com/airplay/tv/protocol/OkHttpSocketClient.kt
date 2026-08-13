@@ -58,13 +58,15 @@ class OkHttpSocketClient internal constructor(
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + coroutineDispatcher)
     private val mutableStates = MutableStateFlow(SocketConnectionState.Closed)
-    private val mutableCommands = MutableSharedFlow<ControlCommand>(
+    private val mutableConnectionGeneration = MutableStateFlow(0L)
+    private val mutableCommands = MutableSharedFlow<ReceivedControlCommand>(
         extraBufferCapacity = COMMAND_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
     override val states: StateFlow<SocketConnectionState> = mutableStates.asStateFlow()
-    override val commands: Flow<ControlCommand> = mutableCommands.asSharedFlow()
+    override val connectionGeneration: StateFlow<Long> = mutableConnectionGeneration.asStateFlow()
+    override val commands: Flow<ReceivedControlCommand> = mutableCommands.asSharedFlow()
 
     private var activeConnection: ConnectionContext? = null
     private var reconnectJob: Job? = null
@@ -83,7 +85,7 @@ class OkHttpSocketClient internal constructor(
             reconnectJob = null
             previousSocket = activeConnection?.webSocket
             reconnectAttempt = 0
-            connection = ConnectionContext(++generation, roomId)
+            connection = ConnectionContext(advanceGeneration(), roomId)
             activeConnection = connection
             updateState(SocketConnectionState.Connecting)
         }
@@ -98,7 +100,7 @@ class OkHttpSocketClient internal constructor(
                 return
             }
             manuallyClosed = true
-            generation++
+            advanceGeneration()
             reconnectJob?.cancel()
             reconnectJob = null
             socketToClose = activeConnection?.webSocket
@@ -181,7 +183,9 @@ class OkHttpSocketClient internal constructor(
                         connection.webSocket === webSocket &&
                         connection.phase == ConnectionPhase.Connected
                     ) {
-                        mutableCommands.tryEmit(command)
+                        mutableCommands.tryEmit(
+                            ReceivedControlCommand(command, connection.generation),
+                        )
                     }
                 }
             }
@@ -214,7 +218,7 @@ class OkHttpSocketClient internal constructor(
             ) {
                 return
             }
-            generation++
+            advanceGeneration()
             val reconnectGeneration = generation
             connection.webSocket = null
             connection.phase = ConnectionPhase.Reconnecting
@@ -231,7 +235,7 @@ class OkHttpSocketClient internal constructor(
                         return@launch
                     }
                     val replacement = ConnectionContext(
-                        generation = ++generation,
+                        generation = advanceGeneration(),
                         roomId = connection.roomId,
                     )
                     activeConnection = replacement
@@ -264,6 +268,12 @@ class OkHttpSocketClient internal constructor(
 
     private fun updateState(state: SocketConnectionState) {
         mutableStates.value = state
+    }
+
+    private fun advanceGeneration(): Long {
+        generation += 1
+        mutableConnectionGeneration.value = generation
+        return generation
     }
 
     private fun joinGroupMessage(roomId: String): String {
