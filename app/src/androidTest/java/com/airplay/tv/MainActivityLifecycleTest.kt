@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -60,9 +61,11 @@ class MainActivityLifecycleTest {
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 lateinit var viewModel: SessionViewModel
+                lateinit var beforeRecreate: MainActivity
                 scenario.onActivity { activity ->
                     assertFalse(activity.hasKeepScreenOnFlag())
                     viewModel = ViewModelProvider(activity)[SessionViewModel::class.java]
+                    beforeRecreate = activity
                 }
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 socket.emit(
@@ -79,6 +82,24 @@ class MainActivityLifecycleTest {
                 waitUntil {
                     viewModel.uiState.value.page == SessionPage.Player &&
                         viewModel.uiState.value.keepScreenOn
+                }
+                scenario.waitForKeepScreenOn(expected = true)
+
+                scenario.moveToState(Lifecycle.State.CREATED)
+                waitForKeepScreenOn(beforeRecreate, expected = false)
+                InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                    beforeRecreate.invokeKeepScreenOnSideEffect(desired = true)
+                }
+                waitForKeepScreenOn(beforeRecreate, expected = false)
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                waitUntil { viewModel.uiState.value.keepScreenOn }
+                scenario.waitForKeepScreenOn(expected = true)
+
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    assertNotSame(beforeRecreate, activity)
+                    assertSame(viewModel, ViewModelProvider(activity)[SessionViewModel::class.java])
                 }
                 scenario.waitForKeepScreenOn(expected = true)
 
@@ -227,10 +248,27 @@ class MainActivityLifecycleTest {
     private fun MainActivity.hasKeepScreenOnFlag(): Boolean =
         window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
 
+    private fun MainActivity.invokeKeepScreenOnSideEffect(desired: Boolean) {
+        MainActivity::class.java
+            .getDeclaredMethod("setKeepScreenOn", Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .invoke(this, desired)
+    }
+
     private fun ActivityScenario<MainActivity>.waitForKeepScreenOn(expected: Boolean) {
         waitUntil {
             var actual = !expected
             onActivity { activity -> actual = activity.hasKeepScreenOnFlag() }
+            actual == expected
+        }
+    }
+
+    private fun waitForKeepScreenOn(activity: MainActivity, expected: Boolean) {
+        waitUntil {
+            var actual = !expected
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                actual = activity.hasKeepScreenOnFlag()
+            }
             actual == expected
         }
     }

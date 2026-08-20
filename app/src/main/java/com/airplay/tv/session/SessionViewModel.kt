@@ -125,7 +125,7 @@ class SessionViewModel(
                         error = resolutionError ?: playerState.error,
                     )
                 }
-                updateWakeState(playerState.isWakeActive())
+                updateWakeState(isWakeActive(playerState))
                 when {
                     playerState.isPlaying && !wasPlaying -> {
                         currentPlaybackIdentity?.let(::startProgressJobs)
@@ -186,13 +186,24 @@ class SessionViewModel(
     }
 
     fun onBack() {
-        when {
+        val stayedOnPlayer = when {
             mutableUiState.value.episodePanelFocused -> exitEpisodes()
             mutableUiState.value.qrVisible -> {
                 mutableUiState.update { it.copy(qrVisible = false) }
+                true
             }
-            mutableUiState.value.infoVisible -> hideInfo()
-            mutableUiState.value.page == SessionPage.Player -> showPairingPage()
+            mutableUiState.value.infoVisible -> {
+                hideInfo()
+                true
+            }
+            mutableUiState.value.page == SessionPage.Player -> {
+                showPairingPage()
+                false
+            }
+            else -> false
+        }
+        if (stayedOnPlayer && mutableUiState.value.page == SessionPage.Player) {
+            updateWakeState(isWakeActive(), resetGrace = true)
         }
     }
 
@@ -218,7 +229,7 @@ class SessionViewModel(
             return
         }
 
-        updateWakeState(playerController.state.value.isWakeActive())
+        updateWakeState(isWakeActive(), resetGrace = true)
 
         if (pendingLoad != null) {
             resolvePendingLoad()
@@ -297,6 +308,7 @@ class SessionViewModel(
         automatic: Boolean = false,
         flushPrevious: Boolean = true,
     ) {
+        val enteringPlayerPage = mutableUiState.value.page != SessionPage.Player
         if (!automatic) pendingAutoAdvance = null
         if (flushPrevious) flushCurrentPlayback()
         stopProgressJobs()
@@ -317,7 +329,6 @@ class SessionViewModel(
             automatic = automatic,
             overlayRevisionAtAcceptance = overlayRevision,
         )
-        resolutionError = null
         mutableUiState.update {
             it.copy(
                 page = SessionPage.Player,
@@ -336,11 +347,11 @@ class SessionViewModel(
                 focusedEpisodeIndex = 0,
                 syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
-                error = null,
+                error = it.error,
             )
         }
 
-        updateWakeState(playerController.state.value.isWakeActive())
+        updateWakeState(isWakeActive(), resetGrace = enteringPlayerPage)
         if (isForeground) resolvePendingLoad()
     }
 
@@ -373,7 +384,7 @@ class SessionViewModel(
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
                     }
-                    updateWakeState(active = false)
+                    updateWakeState(active = false, resetGrace = true)
                     currentPlaybackIdentity
                         ?.takeIf { playerController.state.value.isPlaying }
                         ?.let(::startProgressJobs)
@@ -444,6 +455,7 @@ class SessionViewModel(
                     error = playerController.state.value.error,
                 )
             }
+            updateWakeState(isWakeActive(), resetGrace = true)
             if (playerController.state.value.isPlaying) {
                 startProgressJobs(checkNotNull(currentPlaybackIdentity))
             }
@@ -540,7 +552,7 @@ class SessionViewModel(
         if (handledPlaybackEndGeneration == committedGeneration) return
 
         handledPlaybackEndGeneration = committedGeneration
-        updateWakeState(active = false)
+        updateWakeState(active = false, resetGrace = true)
         flushCurrentPlayback(naturalEnd = true)
         appendDiagnostic(DiagnosticLogEntry("PLAY", PLAYBACK_ENDED_MESSAGE))
         if (pendingDetailsCommand == command) {
@@ -556,7 +568,7 @@ class SessionViewModel(
         if (handledPlaybackErrorGeneration == committedGeneration) return
 
         handledPlaybackErrorGeneration = committedGeneration
-        updateWakeState(active = false)
+        updateWakeState(active = false, resetGrace = true)
         appendDiagnostic(DiagnosticLogEntry("ERR", PLAYER_ERROR_MESSAGE))
     }
 
@@ -597,8 +609,9 @@ class SessionViewModel(
         showInfoTemporarily()
     }
 
-    private fun handleMediaControl(control: MediaControl) {
+    private fun handleMediaControl(control: MediaControl): Boolean {
         if (!isForeground) {
+            val previousIntent = pendingForegroundPlayIntent
             pendingForegroundPlayIntent = when (control) {
                 MediaControl.Play -> true
                 MediaControl.Pause -> false
@@ -606,16 +619,17 @@ class SessionViewModel(
                 MediaControl.Back,
                 -> pendingForegroundPlayIntent
             }
-            return
+            return pendingForegroundPlayIntent != previousIntent
         }
         val pending = pendingMediaControls
         if (mutableUiState.value.loading && pending?.generation == loadGeneration) {
             pending.add(control)
             showInfoTemporarily()
-            return
+            return true
         }
         applyMediaControl(control)
         showInfoTemporarily()
+        return true
     }
 
     private fun applyMediaControl(control: MediaControl) {
@@ -671,9 +685,8 @@ class SessionViewModel(
 
     fun onRemoteControl(action: RemoteControlAction) {
         if (mutableUiState.value.page != SessionPage.Player) return
-        updateWakeState(playerController.state.value.isWakeActive())
 
-        when (action) {
+        val handled = when (action) {
             RemoteControlAction.OpenEpisodes -> openEpisodes()
             RemoteControlAction.EpisodeUp -> moveEpisodeFocus(-1)
             RemoteControlAction.EpisodeDown -> moveEpisodeFocus(1)
@@ -694,10 +707,13 @@ class SessionViewModel(
                 },
             )
         }
+        if (handled && mutableUiState.value.page == SessionPage.Player) {
+            updateWakeState(isWakeActive(), resetGrace = true)
+        }
     }
 
-    private fun openEpisodes() {
-        if (episodes.size <= 1) return
+    private fun openEpisodes(): Boolean {
+        if (episodes.size <= 1 || mutableUiState.value.episodePanelFocused) return false
         overlayRevision += 1
         overlayJob?.cancel()
         overlayJob = null
@@ -711,36 +727,39 @@ class SessionViewModel(
                 }.coerceAtLeast(0),
             )
         }
+        return true
     }
 
-    private fun moveEpisodeFocus(offset: Int) {
-        if (!mutableUiState.value.episodePanelFocused || episodes.isEmpty()) return
-        mutableUiState.update {
-            it.copy(
-                focusedEpisodeIndex = (it.focusedEpisodeIndex + offset)
-                    .coerceIn(0, episodes.lastIndex),
-            )
-        }
-    }
-
-    private fun selectFocusedEpisode() {
+    private fun moveEpisodeFocus(offset: Int): Boolean {
         val state = mutableUiState.value
-        if (!state.episodePanelFocused) return
+        if (!state.episodePanelFocused || episodes.isEmpty()) return false
+        val targetIndex = (state.focusedEpisodeIndex + offset).coerceIn(0, episodes.lastIndex)
+        if (targetIndex == state.focusedEpisodeIndex) return false
+        mutableUiState.update {
+            it.copy(focusedEpisodeIndex = targetIndex)
+        }
+        return true
+    }
+
+    private fun selectFocusedEpisode(): Boolean {
+        val state = mutableUiState.value
+        if (!state.episodePanelFocused) return false
         val target = episodes.getOrNull(state.focusedEpisodeIndex)
         val command = currentLoadCommand
         if (target == null || command == null || target.id == command.pid) {
-            exitEpisodes()
-            return
+            return exitEpisodes()
         }
         mutableUiState.update { it.copy(episodePanelFocused = false) }
         loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
         showInfoTemporarily()
+        return true
     }
 
-    private fun exitEpisodes() {
-        if (!mutableUiState.value.episodePanelFocused) return
+    private fun exitEpisodes(): Boolean {
+        if (!mutableUiState.value.episodePanelFocused) return false
         mutableUiState.update { it.copy(episodePanelFocused = false) }
         showInfoTemporarily()
+        return true
     }
 
     private fun appendDiagnostic(entry: DiagnosticLogEntry) {
@@ -760,18 +779,33 @@ class SessionViewModel(
         }
     }
 
-    private fun updateWakeState(active: Boolean) {
-        val revision = ++keepScreenOnRevision
-        keepScreenOnJob?.cancel()
-        keepScreenOnJob = null
+    private fun updateWakeState(
+        active: Boolean,
+        resetGrace: Boolean = false,
+    ) {
         if (cleared || !isForeground || mutableUiState.value.page != SessionPage.Player) {
+            keepScreenOnRevision += 1
+            keepScreenOnJob?.cancel()
+            keepScreenOnJob = null
             mutableUiState.update { it.copy(keepScreenOn = false) }
             return
         }
 
-        mutableUiState.update { it.copy(keepScreenOn = true) }
-        if (active) return
+        if (active) {
+            keepScreenOnRevision += 1
+            keepScreenOnJob?.cancel()
+            keepScreenOnJob = null
+            mutableUiState.update { it.copy(keepScreenOn = true) }
+            return
+        }
 
+        if (!resetGrace) {
+            if (keepScreenOnJob != null || !mutableUiState.value.keepScreenOn) return
+        }
+
+        val revision = ++keepScreenOnRevision
+        keepScreenOnJob?.cancel()
+        mutableUiState.update { it.copy(keepScreenOn = true) }
         keepScreenOnJob = viewModelScope.launch {
             delay(KEEP_SCREEN_ON_GRACE_PERIOD_MS)
             if (
@@ -785,8 +819,10 @@ class SessionViewModel(
         }
     }
 
-    private fun PlayerState.isWakeActive(): Boolean =
-        error == null && (isPlaying || isBuffering)
+    private fun isWakeActive(playerState: PlayerState = playerController.state.value): Boolean =
+        resolutionError == null &&
+            playerState.error == null &&
+            (playerState.isPlaying || playerState.isBuffering)
 
     private fun startProgressJobs(identity: PlaybackIdentity) {
         stopProgressJobs()

@@ -1846,24 +1846,176 @@ class SessionViewModelTest {
         }
 
     @Test
-    fun validRemoteOperationResetsPausedKeepScreenOnGracePeriod() = runTest(dispatcher) {
+    fun resolutionErrorGraceIsNotCancelledOrExtendedByOldPlayingStateUpdates() =
+        runTest(dispatcher) {
+            api.sourceResponse = { vid, pid ->
+                if (pid == "p2") throw IllegalStateException("replacement failed")
+                successfulSource("https://cdn/$vid-$pid.m3u8")
+            }
+            startCollectors()
+            socket.emit(load("series", "p1"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 10_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            socket.emit(load("series", "p2"))
+            runCurrent()
+            assertEquals("视频加载失败，请重试", viewModel.uiState.value.error)
+
+            repeat(5) { index ->
+                advanceTimeBy(100_000)
+                playerController.setState(
+                    PlayerState(
+                        isPlaying = true,
+                        positionMs = 20_000L + index,
+                        durationMs = 100_000,
+                    ),
+                )
+                runCurrent()
+            }
+            advanceTimeBy(99_999)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+
+            advanceTimeBy(1)
+            runCurrent()
+            playerController.setState(PlayerState())
+            runCurrent()
+            assertFalse(viewModel.uiState.value.keepScreenOn)
+        }
+
+    @Test
+    fun validRemoteOperationsResetPausedKeepScreenOnGracePeriod() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("video", "p1"))
         runCurrent()
-        playerController.setState(PlayerState())
-        runCurrent()
-        advanceTimeBy(500_000)
-        runCurrent()
 
-        viewModel.onRemoteControl(RemoteControlAction.Forward)
-        advanceTimeBy(599_999)
-        runCurrent()
-        assertTrue(viewModel.uiState.value.keepScreenOn)
+        listOf(
+            RemoteControlAction.Play,
+            RemoteControlAction.Pause,
+            RemoteControlAction.TogglePlayPause,
+            RemoteControlAction.Forward,
+            RemoteControlAction.Back,
+        ).forEach { action ->
+            restartPausedWakeGrace()
+            advanceTimeBy(500_000)
+            runCurrent()
 
-        advanceTimeBy(1)
-        runCurrent()
-        assertFalse(viewModel.uiState.value.keepScreenOn)
+            viewModel.onRemoteControl(action)
+            advanceTimeBy(599_999)
+            runCurrent()
+            assertTrue("$action should reset wake grace", viewModel.uiState.value.keepScreenOn)
+
+            advanceTimeBy(1)
+            runCurrent()
+            assertFalse("$action grace should expire", viewModel.uiState.value.keepScreenOn)
+        }
     }
+
+    @Test
+    fun noOpRemoteOperationsDoNotResetPausedKeepScreenOnGracePeriod() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("video", "p1"))
+            runCurrent()
+
+            listOf(
+                RemoteControlAction.OpenEpisodes,
+                RemoteControlAction.EpisodeUp,
+                RemoteControlAction.EpisodeDown,
+                RemoteControlAction.SelectEpisode,
+                RemoteControlAction.ExitEpisodes,
+            ).forEach { action ->
+                restartPausedWakeGrace()
+                advanceTimeBy(500_000)
+                runCurrent()
+
+                viewModel.onRemoteControl(action)
+                advanceTimeBy(99_999)
+                runCurrent()
+                assertTrue("$action should not expire early", viewModel.uiState.value.keepScreenOn)
+
+                advanceTimeBy(1)
+                runCurrent()
+                assertFalse("$action must not reset wake grace", viewModel.uiState.value.keepScreenOn)
+            }
+        }
+
+    @Test
+    fun episodeFocusBoundaryDoesNotResetPausedKeepScreenOnGracePeriod() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+            }
+            startCollectors()
+            socket.emit(load("series", "p1"))
+            runCurrent()
+            viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+            assertEquals(0, viewModel.uiState.value.focusedEpisodeIndex)
+            restartPausedWakeGrace()
+            advanceTimeBy(500_000)
+            runCurrent()
+
+            viewModel.onRemoteControl(RemoteControlAction.EpisodeUp)
+            advanceTimeBy(99_999)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+
+            advanceTimeBy(1)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.keepScreenOn)
+        }
+
+    @Test
+    fun backOverlayActionsResetGraceButReturningToPairingClearsImmediately() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+            }
+            startCollectors()
+            socket.emit(load("series", "p1"))
+            advanceUntilIdle()
+
+            listOf("episodes", "qr", "info").forEach { overlay ->
+                restartPausedWakeGrace()
+                advanceTimeBy(500_000)
+                runCurrent()
+                when (overlay) {
+                    "episodes" -> viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+                    "qr" -> socket.emit(ControlCommand.ShowQrCode)
+                    "info" -> socket.emit(ControlCommand.FullscreenExit)
+                }
+                runCurrent()
+                advanceTimeBy(5_000)
+                runCurrent()
+
+                viewModel.onBack()
+                assertEquals(
+                    "closing $overlay should stay on Player",
+                    SessionPage.Player,
+                    viewModel.uiState.value.page,
+                )
+                advanceTimeBy(599_999)
+                runCurrent()
+                assertTrue(
+                    "closing $overlay should reset wake grace",
+                    viewModel.uiState.value.keepScreenOn,
+                )
+
+                advanceTimeBy(1)
+                runCurrent()
+                assertFalse("$overlay wake grace should expire", viewModel.uiState.value.keepScreenOn)
+            }
+
+            restartPausedWakeGrace()
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+            viewModel.onBack()
+
+            assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
+            assertFalse(viewModel.uiState.value.keepScreenOn)
+        }
 
     @Test
     fun backgroundPairingAndClearImmediatelyDisableKeepScreenOn() = runTest(dispatcher) {
@@ -2264,6 +2416,13 @@ class SessionViewModelTest {
     ) = ControlCommand.LoadVideo(vid, pid, source, mode)
 
     private fun startCollectors() {
+        dispatcher.scheduler.runCurrent()
+    }
+
+    private fun restartPausedWakeGrace() {
+        playerController.setState(PlayerState(isPlaying = true))
+        dispatcher.scheduler.runCurrent()
+        playerController.setState(PlayerState())
         dispatcher.scheduler.runCurrent()
     }
 
