@@ -46,14 +46,14 @@ class PlayerScreenLogicTest {
     }
 
     @Test
-    fun sourceKeepsDiagnosticLayerVisibleWithoutRecentLogs() {
+    fun sourceDoesNotCreateDiagnosticLayerWithoutRecentLogs() {
         val state = SessionUiState(
             roomId = "room-1",
             infoVisible = true,
             sourceName = "ffzy",
         )
 
-        assertTrue(shouldShowPlayerDiagnostics(state))
+        assertFalse(shouldShowPlayerDiagnostics(state))
         assertFalse(shouldShowPlayerDiagnostics(state.copy(infoVisible = false)))
     }
 
@@ -90,18 +90,19 @@ class PlayerScreenLogicTest {
     }
 
     @Test
-    fun diagnosticRowCombinesSafeSourceAndLogsWithoutPlaybackUrl() {
+    fun diagnosticRowKeepsLatestSafeLogAndSourceLabelHasNoPrefix() {
         val log = DiagnosticLogEntry("SYNC", "已同步")
+        val oldLog = DiagnosticLogEntry("WS", "old")
         val state = SessionUiState(
             roomId = "room-1",
             sourceName = "ffzy",
             playbackUrl = "https://secret.example/video.m3u8?token=private",
-            diagnosticLogs = listOf(log),
+            diagnosticLogs = listOf(oldLog, log),
         )
 
-        val content = playerDiagnosticRowContent(state)
+        val content = playerOverlayContent(state)
 
-        assertEquals("源 ffzy", content.sourceLabel)
+        assertEquals("ffzy", content.sourceLabel)
         assertEquals(listOf(log), content.logs)
         assertFalse(content.toString().contains("secret.example"))
         assertFalse(content.toString().contains("token=private"))

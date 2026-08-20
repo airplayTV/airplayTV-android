@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -14,6 +15,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -274,6 +277,31 @@ class AppNavigationTest {
     }
 
     @Test
+    fun episodePanelClipsFocusedFirstAndLastRowsToRoundedCorners() {
+        var state by mutableStateOf(
+            SessionUiState(
+                roomId = "room-1",
+                page = SessionPage.Player,
+                infoVisible = true,
+                episodes = listOf(Episode("p1", "第 1 集"), Episode("p2", "第 2 集")),
+                currentPid = "p1",
+                episodePanelFocused = true,
+                focusedEpisodeIndex = 0,
+            ),
+        )
+        composeRule.setContent {
+            AppNavigation(state = state, player = player, onBack = {})
+        }
+
+        val firstImage = composeRule.onNodeWithTag("episode-panel").captureToImage().toPixelMap()
+        assertBlackCorner(firstImage[0, 0])
+
+        composeRule.runOnIdle { state = state.copy(focusedEpisodeIndex = 1) }
+        val lastImage = composeRule.onNodeWithTag("episode-panel").captureToImage().toPixelMap()
+        assertBlackCorner(lastImage[0, lastImage.height - 1])
+    }
+
+    @Test
     fun singleEpisodeDoesNotShowEpisodePanel() {
         composeRule.setContent {
             AppNavigation(
@@ -317,14 +345,15 @@ class AppNavigationTest {
     }
 
     @Test
-    fun playerSourceAndDiagnosticStayBelowProgressAtBottomRight() {
+    fun playerHudStaysLowWithSourceAfterEpisodeAndDiagnosticAtBottomLeft() {
         composeRule.setContent {
             AppNavigation(
                 state = SessionUiState(
                     roomId = "room-1",
                     page = SessionPage.Player,
                     infoVisible = true,
-                    sourceName = "ffzy",
+                    episodeName = "第 3 集",
+                    sourceName = "very-long-source-name-that-must-be-compact",
                     diagnosticLogs = listOf(DiagnosticLogEntry("SYNC", "已同步")),
                     durationMs = 30_000,
                 ),
@@ -333,22 +362,31 @@ class AppNavigationTest {
             )
         }
 
-        composeRule.onNodeWithText("源 ffzy").assertIsDisplayed()
-        composeRule.onNodeWithTag("player-diagnostic-row").assertIsDisplayed()
-        composeRule.onNodeWithTag("player-source").assertIsDisplayed()
+        composeRule.onNodeWithText("源 very-long-source-name-that-must-be-compact").assertDoesNotExist()
+        composeRule.onNodeWithText("very-long-source-name-that-must-be-compact").assertIsDisplayed()
+        val episode = composeRule.onNodeWithTag("player-episode-name")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val source = composeRule.onNodeWithTag("player-source")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        assertTrue("source must follow episode: episode=$episode source=$source", source.left >= episode.right)
+        assertTrue("source capsule is wider than 140dp: source=$source", source.right - source.left <= 140.dp)
         composeRule.onNodeWithTag("diagnostic-log-overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("diagnostic-overlay-container").assertIsDisplayed()
-        assertRightAligned("diagnostic-overlay-container")
+        assertLeftAligned("diagnostic-overlay-container")
         assertNoOverlap(
             "diagnostic and progress",
             "diagnostic-overlay-container",
             "player-progress",
         )
-        val diagnostic = composeRule.onNodeWithTag("diagnostic-overlay-container")
-            .getUnclippedBoundsInRoot()
         val progress = composeRule.onNodeWithTag("player-progress")
             .getUnclippedBoundsInRoot()
-        assertTrue("diagnostic must be below progress: diagnostic=$diagnostic progress=$progress", diagnostic.top >= progress.bottom)
+        val root = composeRule.onRoot().getUnclippedBoundsInRoot()
+        assertTrue(
+            "progress must stay in the bottom safe area: progress=$progress root=$root",
+            root.bottom - progress.bottom <= 140.dp,
+        )
     }
 
     @Test
@@ -429,6 +467,11 @@ class AppNavigationTest {
         composeRule.onNodeWithText("手机控制器已关联").assertIsDisplayed()
         composeRule.onNodeWithText("已连接").assertDoesNotExist()
         composeRule.onNodeWithTag("connection-status").assertIsDisplayed()
+        val diagnostic = composeRule.onNodeWithTag("diagnostic-log-overlay")
+            .getUnclippedBoundsInRoot()
+        assertTrue("diagnostic is wider than 420dp: diagnostic=$diagnostic", diagnostic.right - diagnostic.left <= 420.dp)
+        assertTrue("diagnostic is taller than 36dp: diagnostic=$diagnostic", diagnostic.bottom - diagnostic.top <= 36.dp)
+        assertLeftAligned("diagnostic-overlay-container")
         assertNoOverlap(
             "pairing diagnostic and QR",
             "diagnostic-overlay-container",
@@ -450,7 +493,7 @@ class AppNavigationTest {
     }
 
     @Test
-    fun playerDiagnosticUsesLatestFiveRowsAndDoesNotOverlapHud() {
+    fun playerDiagnosticUsesOnlyLatestRowAndDoesNotOverlapHud() {
         val logs = (1..6).map { index -> DiagnosticLogEntry("CTL", "日志-$index") }
         composeRule.setContent {
             AppNavigation(
@@ -469,9 +512,10 @@ class AppNavigationTest {
         }
 
         composeRule.onNodeWithText("日志-1").assertDoesNotExist()
-        (2..6).forEach { index ->
-            composeRule.onNodeWithText("日志-$index").assertIsDisplayed()
+        (2..5).forEach { index ->
+            composeRule.onNodeWithText("日志-$index").assertDoesNotExist()
         }
+        composeRule.onNodeWithText(logs.last().message).assertIsDisplayed()
         assertNoOverlap(
             "player diagnostic and progress",
             "diagnostic-overlay-container",
@@ -601,6 +645,12 @@ class AppNavigationTest {
         assertEquals(48.dp, root.right - node.right)
     }
 
+    private fun assertLeftAligned(tag: String) {
+        val root = composeRule.onRoot().getUnclippedBoundsInRoot()
+        val node = composeRule.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+        assertEquals(48.dp, node.left - root.left)
+    }
+
     private fun assertNoOverlap(
         description: String,
         firstTag: String,
@@ -626,5 +676,11 @@ class AppNavigationTest {
 
     private fun DpRect.intersects(other: DpRect): Boolean =
         left < other.right && right > other.left && top < other.bottom && bottom > other.top
+
+    private fun assertBlackCorner(color: Color) {
+        assertTrue("rounded corner leaked row highlight: color=$color", color.red < 0.02f)
+        assertTrue("rounded corner leaked row highlight: color=$color", color.green < 0.02f)
+        assertTrue("rounded corner leaked row highlight: color=$color", color.blue < 0.02f)
+    }
 
 }

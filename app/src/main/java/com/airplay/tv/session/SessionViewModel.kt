@@ -304,7 +304,7 @@ class SessionViewModel(
             ControlCommand.Fullscreen -> hideInfo()
             ControlCommand.FullscreenExit -> showInfoTemporarily()
             ControlCommand.ToggleInfo -> toggleInfo()
-            ControlCommand.ShowQrCode -> showQrOverlay()
+            ControlCommand.ShowQrCode -> toggleQrOverlay()
             ControlCommand.Previous -> loadAdjacentEpisode(-1)
             ControlCommand.Next -> loadAdjacentEpisode(1)
             is ControlCommand.ControllerPaired -> Unit
@@ -1035,9 +1035,14 @@ class SessionViewModel(
         )
     }
 
-    private fun showQrOverlay() {
+    private fun toggleQrOverlay() {
         if (mutableUiState.value.page == SessionPage.Player) {
-            val wasEpisodePanelFocused = mutableUiState.value.episodePanelFocused
+            val state = mutableUiState.value
+            if (state.qrVisible) {
+                mutableUiState.update { it.copy(qrVisible = false) }
+                return
+            }
+            val wasEpisodePanelFocused = state.episodePanelFocused
             mutableUiState.update {
                 it.copy(
                     qrVisible = true,

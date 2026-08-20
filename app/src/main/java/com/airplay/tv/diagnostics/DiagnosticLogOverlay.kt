@@ -25,40 +25,40 @@ fun DiagnosticLogOverlay(
 ) {
     Column(
         modifier = modifier
-            .widthIn(max = 560.dp)
+            .widthIn(max = 420.dp)
             .fillMaxWidth()
             .background(Color(0xD90B111A), MaterialTheme.shapes.medium)
-            .padding(horizontal = 14.dp, vertical = 12.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .testTag("diagnostic-log-overlay"),
     ) {
         logs.takeLast(MAX_VISIBLE_DIAGNOSTIC_LOGS).forEach { entry ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 2.dp),
+                    .padding(vertical = 1.dp),
             ) {
                 Text(
                     text = formatDiagnosticTime(entry.timestampMillis),
                     color = Color(0xFF9DAAB9),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
+                    fontSize = 11.sp,
                 )
                 Text(
                     text = entry.stage,
-                    modifier = Modifier.padding(start = 10.dp),
+                    modifier = Modifier.padding(start = 8.dp),
                     color = MaterialTheme.colorScheme.primary,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
                     text = entry.message,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 10.dp),
+                        .padding(start = 8.dp),
                     color = Color(0xFFD6DEE8),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
+                    fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

@@ -1495,6 +1495,22 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun repeatedQrCommandTogglesPlayerQrVisibility() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+
+        socket.emit(ControlCommand.ShowQrCode)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.qrVisible)
+
+        socket.emit(ControlCommand.ShowQrCode)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.qrVisible)
+        assertEquals(SessionPage.Player, viewModel.uiState.value.page)
+    }
+
+    @Test
     fun acceptedResolutionPublishesAndClearRemovesPlaybackUrl() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("video", "p1"))

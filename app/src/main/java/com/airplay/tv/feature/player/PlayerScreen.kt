@@ -1,6 +1,7 @@
 package com.airplay.tv.feature.player
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -84,9 +86,9 @@ fun PlayerScreen(
         if (shouldShowPlayerDiagnostics(state)) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
+                    .align(Alignment.BottomStart)
                     .zIndex(PLAYER_DIAGNOSTIC_LAYER_Z_INDEX)
-                    .padding(end = 48.dp, bottom = 40.dp)
+                    .padding(start = 48.dp, bottom = 40.dp)
                     .testTag("diagnostic-overlay-container"),
             ) {
                 PlayerDiagnosticOverlay(state = state)
@@ -137,7 +139,7 @@ internal fun playerConnectionStatusTopPadding(qrVisible: Boolean) =
     if (qrVisible) 292.dp else 40.dp
 
 internal fun shouldShowPlayerDiagnostics(state: SessionUiState): Boolean =
-    state.infoVisible && (state.sourceName.isNotBlank() || state.diagnosticLogs.isNotEmpty())
+    state.infoVisible && state.diagnosticLogs.isNotEmpty()
 
 internal fun shouldShowEpisodePanel(state: SessionUiState): Boolean =
     state.infoVisible && state.episodes.size > 1
@@ -146,14 +148,14 @@ internal fun isEpisodeFocused(state: SessionUiState, episodeId: String): Boolean
     state.episodePanelFocused &&
         state.episodes.getOrNull(state.focusedEpisodeIndex)?.id == episodeId
 
-internal data class PlayerDiagnosticRowContent(
+internal data class PlayerOverlayContent(
     val sourceLabel: String,
     val logs: List<DiagnosticLogEntry>,
 )
 
-internal fun playerDiagnosticRowContent(state: SessionUiState) = PlayerDiagnosticRowContent(
-    sourceLabel = "源 ${state.sourceName.ifBlank { "--" }}",
-    logs = state.diagnosticLogs,
+internal fun playerOverlayContent(state: SessionUiState) = PlayerOverlayContent(
+    sourceLabel = state.sourceName.ifBlank { "--" },
+    logs = state.diagnosticLogs.takeLast(1),
 )
 
 internal const val PLAYER_INFO_LAYER_Z_INDEX = 1f
@@ -164,33 +166,12 @@ private fun PlayerDiagnosticOverlay(
     state: SessionUiState,
     modifier: Modifier = Modifier,
 ) {
-    val content = playerDiagnosticRowContent(state)
-    Row(
-        modifier = modifier
-            .widthIn(max = 760.dp)
-            .testTag("player-diagnostic-row"),
-        horizontalArrangement = Arrangement.End,
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Text(
-            text = content.sourceLabel,
-            modifier = Modifier
-                .background(Color(0xD90B111A), MaterialTheme.shapes.medium)
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .testTag("player-source"),
-            color = Color(0xFFD6DEE8),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+    val content = playerOverlayContent(state)
+    if (content.logs.isNotEmpty()) {
+        DiagnosticLogOverlay(
+            logs = content.logs,
+            modifier = modifier,
         )
-        if (content.logs.isNotEmpty()) {
-            DiagnosticLogOverlay(
-                logs = content.logs,
-                modifier = Modifier.padding(start = 6.dp),
-            )
-        }
     }
 }
 
@@ -200,6 +181,7 @@ private fun EpisodePanel(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    val panelShape = MaterialTheme.shapes.medium
     LaunchedEffect(state.focusedEpisodeIndex, state.episodes.size) {
         if (state.focusedEpisodeIndex in state.episodes.indices) {
             listState.animateScrollToItem(state.focusedEpisodeIndex)
@@ -210,7 +192,8 @@ private fun EpisodePanel(
         modifier = modifier
             .widthIn(min = 180.dp, max = 240.dp)
             .heightIn(max = 240.dp)
-            .background(Color(0xE6121B25), MaterialTheme.shapes.medium)
+            .clip(panelShape)
+            .background(Color(0xE6121B25))
             .testTag("episode-panel"),
     ) {
         items(state.episodes, key = Episode::id) { episode ->
@@ -253,6 +236,7 @@ private fun EpisodeRow(
 
 @Composable
 private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifier) {
+    val content = playerOverlayContent(state)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -262,7 +246,7 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                 ),
             )
             .testTag("player-info-overlay")
-            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 248.dp),
+            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 104.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
             Column(
@@ -278,15 +262,43 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (state.episodeName.isNotBlank()) {
-                    Text(
-                        text = state.episodeName,
+                if (state.episodeName.isNotBlank() || state.sourceName.isNotBlank()) {
+                    Row(
                         modifier = Modifier.padding(top = 6.dp),
-                        color = Color(0xFFC5CDD8),
-                        fontSize = 18.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.episodeName.isNotBlank()) {
+                            Text(
+                                text = state.episodeName,
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .testTag("player-episode-name"),
+                                color = Color(0xFFC5CDD8),
+                                fontSize = 18.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (state.sourceName.isNotBlank()) {
+                            val sourceShape = MaterialTheme.shapes.small
+                            Text(
+                                text = content.sourceLabel,
+                                modifier = Modifier
+                                    .padding(start = if (state.episodeName.isBlank()) 0.dp else 8.dp)
+                                    .widthIn(max = 140.dp)
+                                    .background(Color(0xB31B2532), sourceShape)
+                                    .border(1.dp, Color(0xFF526274), sourceShape)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .testTag("player-source"),
+                                color = Color(0xFFD6DEE8),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
             }
             if (state.playbackUrl.isNotBlank()) {

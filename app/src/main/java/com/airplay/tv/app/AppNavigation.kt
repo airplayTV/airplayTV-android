@@ -140,8 +140,8 @@ fun AppNavigation(
         ) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 48.dp, bottom = 40.dp)
+                    .align(Alignment.BottomStart)
+                    .padding(start = 48.dp, bottom = 40.dp)
                     .testTag("diagnostic-overlay-container"),
             ) {
                 DiagnosticLogOverlay(
