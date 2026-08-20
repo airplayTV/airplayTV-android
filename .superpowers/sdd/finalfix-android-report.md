@@ -70,3 +70,43 @@ Android TV 1080p API 28 模拟器：
 - 未进行实体 Android TV、实体遥控器和线上 WebSocket 端到端验收；当前设备证据来自 Android TV 1080p API 28 模拟器。
 - 构建仅存在仓库既有 Gradle 9 deprecated-features 提示，无新增编译或测试警告。
 - 未修改或暂存根 `build.gradle.kts`、`.superpowers/sdd/task-7-report.md`。
+
+## 第二轮复审修复
+
+### 关联代次与 committed media
+
+- 新增独立 `controllerAssociationRevision`；pair 新边沿、unpair、断线和 connection generation 变化都会递增 revision 并取消旧查询 job。
+- 异步 `latest()` 返回后再次校验关联 revision、connection generation 和 committed identity；即使旧查询不可协作取消，也不能跨 unpair -> pair 新边沿发送。
+- pending load 不再使旧 committed identity 失效；首次 pair 直接使用旧 committed context 与当前 PlayerState 刷新快照，不回退 repository latest。
+- latest 查询期间若新媒体完成 commit，则丢弃旧查询结果，避免发送过期记录。
+
+### 选集当前位置
+
+- details 返回后按 current pid 更新 `focusedEpisodeIndex`；未聚焦常显面板自动滚动到当前集，进入语义焦点仍从当前集开始。
+- preserve episodes 的切集入口同样按目标 pid 初始化 index，不再无条件回到首集。
+
+### join ACK 超时
+
+- join 帧发送成功后启动 generation/socket/phase 约束的 10 秒握手超时。
+- 超时原子 claim 当前 Connecting 连接，关闭后进入现有指数回退；200 ACK、close、room switch 和 disconnect 均取消旧 timeout job。
+- ACK 与 timeout 竞争由同一 lock 和 phase 转换裁决，不会由旧 generation timeout 关闭新连接。
+
+### 第二轮 TDD
+
+RED：
+
+- 不可协作取消的旧 latest 在同 connection generation 的 unpair -> pair 后与新查询一起发送，`single()` 因两条消息失败。
+- pending load 时 pair 错误发送 repository stale record，而非 committed p1 当前 41 秒快照。
+- latest 查询期间新媒体 commit 后仍发送 stale record。
+- 非首集 p3 details 加载后 `focusedEpisodeIndex` 仍为 0。
+- join ACK 缺失推进 10 秒后仍为 `Connecting`，未关闭、未重连。
+
+GREEN：对应 focused Session/Protocol 测试全部通过。
+
+第二轮 clean 验证：
+
+- `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks`：`BUILD SUCCESSFUL in 47s`，33/33 tasks 重新执行。
+- Debug JVM：25 suites，228 tests，0 failure，0 error，0 skipped。
+- 完整 `com.airplay.tv.protocol.*` 与 `com.airplay.tv.session.*` 套件通过。
+- AndroidTest Kotlin 编译通过。
+- Android TV 1080p API 28 模拟器 `AppNavigationTest`：20/20 通过，0 skipped，0 failed。

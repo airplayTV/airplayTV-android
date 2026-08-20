@@ -90,6 +90,7 @@ class OkHttpSocketClient internal constructor(
             check(!manuallyClosed) { "Socket client is closed" }
             reconnectJob?.cancel()
             reconnectJob = null
+            activeConnection?.joinTimeoutJob?.cancel()
             previousSocket = activeConnection?.webSocket
             reconnectAttempt = 0
             connection = ConnectionContext(advanceGeneration(), roomId)
@@ -125,6 +126,7 @@ class OkHttpSocketClient internal constructor(
             advanceGeneration()
             reconnectJob?.cancel()
             reconnectJob = null
+            activeConnection?.joinTimeoutJob?.cancel()
             socketToClose = activeConnection?.webSocket
             activeConnection = null
             updateState(SocketConnectionState.Closed)
@@ -182,7 +184,7 @@ class OkHttpSocketClient internal constructor(
                         webSocket.cancel()
                         handleDisconnect(connection, webSocket, disconnected)
                     }
-                    OpenResult.JoinSent -> Unit
+                    OpenResult.JoinSent -> scheduleJoinTimeout(connection, webSocket, disconnected)
                 }
             }
 
@@ -206,14 +208,18 @@ class OkHttpSocketClient internal constructor(
                                 connection.phase == ConnectionPhase.Connecting
                             ) {
                                 reconnectAttempt = 0
+                                connection.joinTimeoutJob?.cancel()
+                                connection.joinTimeoutJob = null
                                 connection.phase = ConnectionPhase.Connected
                                 updateState(SocketConnectionState.Connected)
                             }
                         }
-                        JoinAck.Rejected -> {
-                            webSocket.close(NORMAL_CLOSURE_CODE, JOIN_REJECTED_REASON)
-                            handleDisconnect(connection, webSocket, disconnected)
-                        }
+                        JoinAck.Rejected -> disconnectPendingJoin(
+                            connection,
+                            webSocket,
+                            disconnected,
+                            JOIN_REJECTED_REASON,
+                        )
                         JoinAck.NotJoinAck -> Unit
                     }
                     return
@@ -276,6 +282,8 @@ class OkHttpSocketClient internal constructor(
             }
             advanceGeneration()
             val reconnectGeneration = generation
+            connection.joinTimeoutJob?.cancel()
+            connection.joinTimeoutJob = null
             connection.webSocket = null
             connection.phase = ConnectionPhase.Reconnecting
             val attempt = reconnectAttempt++
@@ -340,6 +348,61 @@ class OkHttpSocketClient internal constructor(
         }.toString()
     }
 
+    private fun scheduleJoinTimeout(
+        connection: ConnectionContext,
+        webSocket: WebSocket,
+        disconnected: AtomicBoolean,
+    ) {
+        val timeoutJob = scope.launch(start = CoroutineStart.LAZY) {
+            delay(JOIN_ACK_TIMEOUT_MS)
+            disconnectPendingJoin(
+                connection,
+                webSocket,
+                disconnected,
+                JOIN_TIMEOUT_REASON,
+            )
+        }
+        val shouldStart = synchronized(lock) {
+            if (
+                isCurrent(connection) &&
+                connection.webSocket === webSocket &&
+                connection.phase == ConnectionPhase.Connecting
+            ) {
+                connection.joinTimeoutJob?.cancel()
+                connection.joinTimeoutJob = timeoutJob
+                true
+            } else {
+                false
+            }
+        }
+        if (shouldStart) timeoutJob.start() else timeoutJob.cancel()
+    }
+
+    private fun disconnectPendingJoin(
+        connection: ConnectionContext,
+        webSocket: WebSocket,
+        disconnected: AtomicBoolean,
+        reason: String,
+    ) {
+        val claimed = synchronized(lock) {
+            if (
+                isCurrent(connection) &&
+                connection.webSocket === webSocket &&
+                connection.phase == ConnectionPhase.Connecting
+            ) {
+                connection.phase = ConnectionPhase.Reconnecting
+                connection.joinTimeoutJob?.cancel()
+                connection.joinTimeoutJob = null
+                true
+            } else {
+                false
+            }
+        }
+        if (!claimed) return
+        webSocket.close(NORMAL_CLOSURE_CODE, reason)
+        handleDisconnect(connection, webSocket, disconnected)
+    }
+
     private fun parseJoinAck(text: String, roomId: String): JoinAck {
         return try {
             val root = JsonParser.parseString(text).takeIf { it.isJsonObject }?.asJsonObject
@@ -370,7 +433,9 @@ class OkHttpSocketClient internal constructor(
         const val NORMAL_CLOSURE_CODE = 1000
         const val NORMAL_CLOSURE_REASON = "client closed"
         const val JOIN_ACCEPTED_CODE = 200
+        const val JOIN_ACK_TIMEOUT_MS = 10_000L
         const val JOIN_REJECTED_REASON = "join rejected"
+        const val JOIN_TIMEOUT_REASON = "join timeout"
         val LOGGER: Logger = Logger.getLogger(OkHttpSocketClient::class.java.name)
     }
 
@@ -391,6 +456,7 @@ class OkHttpSocketClient internal constructor(
         val roomId: String,
         var webSocket: WebSocket? = null,
         var phase: ConnectionPhase = ConnectionPhase.Connecting,
+        var joinTimeoutJob: Job? = null,
     )
 
     private enum class ConnectionPhase {

@@ -54,6 +54,7 @@ class SessionViewModel(
     private var localProgressJob: Job? = null
     private var remoteProgressJob: Job? = null
     private var syncTimeoutJob: Job? = null
+    private var associationSnapshotJob: Job? = null
     private var keepScreenOnJob: Job? = null
     private var pendingLoad: PendingLoad? = null
     private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
@@ -73,6 +74,7 @@ class SessionViewModel(
     private var isForeground = false
     private var pendingForegroundPlayIntent: Boolean? = null
     private var controllerAssociationLogged = false
+    private var controllerAssociationRevision = 0L
     private var overlayRevision = 0L
     private var diagnosticRevision = 0L
     private var keepScreenOnRevision = 0L
@@ -100,7 +102,7 @@ class SessionViewModel(
                     connection == SocketConnectionState.Reconnecting ||
                     connection == SocketConnectionState.Closed
                 ) {
-                    controllerAssociationLogged = false
+                    invalidateControllerAssociation()
                     failPendingSync()
                 }
                 if (connection != previousConnection) {
@@ -110,7 +112,7 @@ class SessionViewModel(
         }
         viewModelScope.launch {
             socketClient.connectionGeneration.collect {
-                controllerAssociationLogged = false
+                invalidateControllerAssociation()
                 mutableUiState.update { it.copy(controllerConnected = false) }
             }
         }
@@ -170,6 +172,11 @@ class SessionViewModel(
                 val command = received.command
                 val firstAssociation =
                     command == ControlCommand.ControllerPaired && !controllerAssociationLogged
+                val associationRevision = if (firstAssociation) {
+                    beginControllerAssociation()
+                } else {
+                    null
+                }
                 val shouldAppendDiagnostic = when (command) {
                     ControlCommand.HistoryIgnored -> false
                     ControlCommand.ControllerPaired -> firstAssociation
@@ -178,12 +185,9 @@ class SessionViewModel(
                 if (shouldAppendDiagnostic) {
                     appendDiagnostic(command.toDiagnosticLog())
                 }
-                if (command == ControlCommand.ControllerPaired) {
-                    controllerAssociationLogged = true
-                }
                 handleCommand(command)
-                if (firstAssociation) {
-                    pushLatestPlaybackOnAssociation(received.generation)
+                if (associationRevision != null) {
+                    pushLatestPlaybackOnAssociation(received.generation, associationRevision)
                 }
             }
         }
@@ -300,7 +304,7 @@ class SessionViewModel(
             ControlCommand.Next -> loadAdjacentEpisode(1)
             ControlCommand.ControllerPaired -> Unit
             ControlCommand.ControllerUnpaired -> {
-                controllerAssociationLogged = false
+                invalidateControllerAssociation()
                 mutableUiState.update { it.copy(controllerConnected = false) }
             }
             ControlCommand.HistoryIgnored -> Unit
@@ -349,7 +353,9 @@ class SessionViewModel(
                 episodes = episodes,
                 currentPid = command.pid,
                 episodePanelFocused = false,
-                focusedEpisodeIndex = 0,
+                focusedEpisodeIndex = episodes.indexOfFirst { episode ->
+                    episode.id == command.pid
+                }.coerceAtLeast(0),
                 syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
                 error = it.error,
@@ -525,6 +531,9 @@ class SessionViewModel(
                         .orEmpty()
                         .ifEmpty { it.episodeName },
                     episodes = details.episodes,
+                    focusedEpisodeIndex = details.episodes.indexOfFirst { episode ->
+                        episode.id == command.pid
+                    }.takeIf { index -> index >= 0 } ?: it.focusedEpisodeIndex,
                 )
             }
             val pendingAdvance = pendingAutoAdvance
@@ -910,8 +919,26 @@ class SessionViewModel(
         }
     }
 
-    private fun pushLatestPlaybackOnAssociation(connectionGeneration: Long) {
-        val identity = currentPlaybackIdentity?.takeIf(::isCurrent)
+    private fun beginControllerAssociation(): Long {
+        controllerAssociationLogged = true
+        controllerAssociationRevision += 1
+        associationSnapshotJob?.cancel()
+        associationSnapshotJob = null
+        return controllerAssociationRevision
+    }
+
+    private fun invalidateControllerAssociation() {
+        controllerAssociationLogged = false
+        controllerAssociationRevision += 1
+        associationSnapshotJob?.cancel()
+        associationSnapshotJob = null
+    }
+
+    private fun pushLatestPlaybackOnAssociation(
+        connectionGeneration: Long,
+        associationRevision: Long,
+    ) {
+        val identity = currentPlaybackIdentity
         if (identity != null) {
             val record = playbackRecord(identity, playerController.state.value) ?: return
             playbackProgressRepository.enqueueSave(record)
@@ -919,12 +946,14 @@ class SessionViewModel(
             return
         }
 
-        viewModelScope.launch {
+        associationSnapshotJob = viewModelScope.launch {
             val record = playbackProgressRepository.latest() ?: return@launch
             if (
                 cleared ||
                 !controllerAssociationLogged ||
-                connectionGeneration != socketClient.connectionGeneration.value
+                associationRevision != controllerAssociationRevision ||
+                connectionGeneration != socketClient.connectionGeneration.value ||
+                currentPlaybackIdentity != null
             ) {
                 return@launch
             }

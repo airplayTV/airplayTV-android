@@ -162,6 +162,93 @@ class SessionViewModelTest {
         }
 
     @Test
+    fun staleLatestLookupCannotSendAfterUnpairAndNewPairEdge() = runTest(dispatcher) {
+        val firstLookupStarted = CompletableDeferred<Unit>()
+        val releaseFirstLookup = CompletableDeferred<Unit>()
+        var lookupCount = 0
+        repository.latestResponse = {
+            lookupCount += 1
+            if (lookupCount == 1) {
+                firstLookupStarted.complete(Unit)
+                withContext(NonCancellable) { releaseFirstLookup.await() }
+                record("source-a", "stale-series", "p1", positionMs = 10_000)
+            } else {
+                record("source-b", "fresh-series", "p2", positionMs = 20_000)
+            }
+        }
+        startCollectors()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        firstLookupStarted.await()
+        socket.emit(ControlCommand.ControllerUnpaired)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        releaseFirstLookup.complete(Unit)
+        runCurrent()
+
+        val sent = socket.playbackHistorySendAttempts.single().record
+        assertEquals("fresh-series", sent.vid)
+        assertEquals("p2", sent.pid)
+    }
+
+    @Test
+    fun pairDuringPendingLoadPushesCommittedMediaWithCurrentPlayerState() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = false, positionMs = 41_000, durationMs = 100_000),
+            )
+            runCurrent()
+            api.sourceResponse = { vid, pid ->
+                if (pid == "p2") {
+                    withContext(NonCancellable) { delay(1_000) }
+                }
+                successfulSource("https://cdn/$vid-$pid.m3u8")
+            }
+            repository.latestResponse = {
+                record("source-old", "stale-series", "p9", positionMs = 9_000)
+            }
+
+            socket.emit(load("series", "p2", source = "source-a"))
+            runCurrent()
+            socket.playbackHistorySendAttempts.clear()
+            socket.emit(ControlCommand.ControllerPaired)
+            runCurrent()
+
+            val sent = socket.playbackHistorySendAttempts.single().record
+            assertEquals("series", sent.vid)
+            assertEquals("p1", sent.pid)
+            assertEquals(41_000, sent.positionMs)
+            assertEquals(0, repository.latestCallCount)
+        }
+
+    @Test
+    fun latestLookupCannotSendStaleRecordAfterMediaCommits() = runTest(dispatcher) {
+        val latestStarted = CompletableDeferred<Unit>()
+        val releaseLatest = CompletableDeferred<Unit>()
+        repository.latestResponse = {
+            latestStarted.complete(Unit)
+            releaseLatest.await()
+            record("source-old", "stale-series", "p9", positionMs = 9_000)
+        }
+        startCollectors()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        latestStarted.await()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        socket.playbackHistorySendAttempts.clear()
+        releaseLatest.complete(Unit)
+        runCurrent()
+
+        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+    }
+
+    @Test
     fun zeroRecipientPairAckDoesNotStopThirtySecondPlaybackSync() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("series", "p1", source = "source-a"))
@@ -193,6 +280,30 @@ class SessionViewModelTest {
         playerController.setState(PlayerState(isPlaying = false))
         runCurrent()
     }
+
+    @Test
+    fun detailsAnchorUnfocusedEpisodePanelAndFocusedEntryToCurrentEpisode() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail(
+                    "Series",
+                    "p1" to "Episode 1",
+                    "p2" to "Episode 2",
+                    "p3" to "Episode 3",
+                    "p4" to "Episode 4",
+                )
+            }
+            startCollectors()
+
+            socket.emit(load("series", "p3", source = "source-a"))
+            advanceUntilIdle()
+
+            assertFalse(viewModel.uiState.value.episodePanelFocused)
+            assertEquals(2, viewModel.uiState.value.focusedEpisodeIndex)
+            viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+            assertTrue(viewModel.uiState.value.episodePanelFocused)
+            assertEquals(2, viewModel.uiState.value.focusedEpisodeIndex)
+        }
 
     @Test
     fun playingPersistsEveryFiveSecondsAndSendsFirstRemoteSnapshotAtThirtySeconds() =
@@ -2603,6 +2714,8 @@ class SessionViewModelTest {
         var findResponse: suspend (String, String, String) -> PlaybackRecord? =
             { source, vid, pid -> records[Triple(source, vid, pid)] }
         var beforeSave: suspend (PlaybackRecord) -> Unit = {}
+        var latestCallCount = 0
+        var latestResponse: suspend () -> PlaybackRecord? = { latestRecord }
 
         init {
             persistenceScope.launch {
@@ -2628,7 +2741,10 @@ class SessionViewModelTest {
         override suspend fun find(source: String, vid: String, pid: String): PlaybackRecord? =
             findResponse(source, vid, pid)
 
-        override suspend fun latest(): PlaybackRecord? = latestRecord
+        override suspend fun latest(): PlaybackRecord? {
+            latestCallCount += 1
+            return latestResponse()
+        }
 
         override suspend fun save(record: PlaybackRecord) {
             saveAttempts += record

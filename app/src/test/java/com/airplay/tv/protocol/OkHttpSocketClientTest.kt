@@ -13,6 +13,7 @@ import kotlin.math.roundToLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.collect
@@ -82,7 +83,7 @@ class OkHttpSocketClientTest {
                 },
             ),
         )
-        val socketClient = createClient(StandardTestDispatcher(testScheduler))
+        val socketClient = createClient(Dispatchers.IO)
         val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
 
         socketClient.connect(roomId)
@@ -113,6 +114,9 @@ class OkHttpSocketClientTest {
         assertEquals(SocketConnectionState.Connected, socketClient.states.value)
         assertTrue(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
         assertEquals(ControlCommand.Pause, command.await().command)
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals(SocketConnectionState.Connected, socketClient.states.value)
     }
 
     @Test
@@ -131,6 +135,28 @@ class OkHttpSocketClientTest {
         runCurrent()
         assertEquals(1, connector.connections.size)
         advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, connector.connections.size)
+    }
+
+    @Test
+    fun missingJoinAckTimesOutAndUsesReconnectBackoff() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertEquals(SocketConnectionState.Connecting, socketClient.states.value)
+        assertTrue(connection.webSocket.closeCodes.isEmpty())
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(SocketConnectionState.Reconnecting, socketClient.states.value)
+        assertEquals(listOf(1000), connection.webSocket.closeCodes)
+        advanceTimeBy(1_000)
         runCurrent()
         assertEquals(2, connector.connections.size)
     }
@@ -610,7 +636,7 @@ class OkHttpSocketClientTest {
                 },
             ),
         )
-        val socketClient = createClient(StandardTestDispatcher(testScheduler))
+        val socketClient = createClient(Dispatchers.IO)
         val connected = async(start = CoroutineStart.UNDISPATCHED) {
             socketClient.states.first { it == SocketConnectionState.Connected }
         }
