@@ -90,4 +90,60 @@ class AppRemoteKeyHandlerTest {
             actions,
         )
     }
+
+    @Test
+    fun consumesOwnedEpisodeLeftRepeatsUntilKeyUpThenAllowsTheNextBackPress() {
+        val actions = mutableListOf<RemoteControlAction>()
+        val handler = TvRemoteKeyHandler()
+
+        assertTrue(
+            handler.handle(
+                page = SessionPage.Player,
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                keyAction = KeyEvent.ACTION_DOWN,
+                repeatCount = 0,
+                episodePanelFocused = true,
+                onRemoteControl = actions::add,
+            ),
+        )
+        assertEquals(listOf(RemoteControlAction.ExitEpisodes), actions)
+
+        assertTrue(
+            handler.handle(
+                page = SessionPage.Player,
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                keyAction = KeyEvent.ACTION_DOWN,
+                repeatCount = 1,
+                episodePanelFocused = false,
+                onRemoteControl = actions::add,
+            ),
+        )
+        assertEquals(listOf(RemoteControlAction.ExitEpisodes), actions)
+
+        assertTrue(
+            handler.handle(
+                page = SessionPage.Player,
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                keyAction = KeyEvent.ACTION_UP,
+                repeatCount = 0,
+                episodePanelFocused = false,
+                onRemoteControl = actions::add,
+            ),
+        )
+
+        assertTrue(
+            handler.handle(
+                page = SessionPage.Player,
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                keyAction = KeyEvent.ACTION_DOWN,
+                repeatCount = 0,
+                episodePanelFocused = false,
+                onRemoteControl = actions::add,
+            ),
+        )
+        assertEquals(
+            listOf(RemoteControlAction.ExitEpisodes, RemoteControlAction.Back),
+            actions,
+        )
+    }
 }

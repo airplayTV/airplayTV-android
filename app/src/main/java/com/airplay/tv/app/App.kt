@@ -1,5 +1,6 @@
 package com.airplay.tv.app
 
+import android.view.KeyEvent
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,6 +27,7 @@ fun App(
     onRemoteControl: (RemoteControlAction) -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
+    val remoteKeyHandler = remember { TvRemoteKeyHandler() }
     LaunchedEffect(focusRequester) {
         focusRequester.requestFocus()
     }
@@ -37,7 +39,7 @@ fun App(
                 .focusRequester(focusRequester)
                 .onPreviewKeyEvent { event ->
                     val nativeEvent = event.nativeKeyEvent
-                    handleTvRemoteKey(
+                    remoteKeyHandler.handle(
                         page = state.page,
                         keyCode = nativeEvent.keyCode,
                         keyAction = nativeEvent.action,
@@ -55,6 +57,34 @@ fun App(
                 onBack = onBack,
             )
         }
+    }
+}
+
+internal class TvRemoteKeyHandler {
+    private var episodeActionKeyCode: Int? = null
+
+    fun handle(
+        page: SessionPage,
+        keyCode: Int,
+        keyAction: Int,
+        repeatCount: Int,
+        episodePanelFocused: Boolean,
+        onRemoteControl: (RemoteControlAction) -> Unit,
+    ): Boolean {
+        if (episodeActionKeyCode == keyCode) {
+            if (keyAction == KeyEvent.ACTION_UP) {
+                episodeActionKeyCode = null
+            }
+            return true
+        }
+        if (page != SessionPage.Player) return false
+
+        val action = mapTvRemoteKey(keyCode, keyAction, repeatCount, episodePanelFocused) ?: return false
+        if (action == RemoteControlAction.ExitEpisodes) {
+            episodeActionKeyCode = keyCode
+        }
+        onRemoteControl(action)
+        return true
     }
 }
 
