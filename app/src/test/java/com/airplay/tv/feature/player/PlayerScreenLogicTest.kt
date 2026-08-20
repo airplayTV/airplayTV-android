@@ -43,4 +43,16 @@ class PlayerScreenLogicTest {
             ),
         )
     }
+
+    @Test
+    fun sourceKeepsDiagnosticLayerVisibleWithoutRecentLogs() {
+        val state = SessionUiState(
+            roomId = "room-1",
+            infoVisible = true,
+            sourceName = "ffzy",
+        )
+
+        assertTrue(shouldShowPlayerDiagnostics(state))
+        assertFalse(shouldShowPlayerDiagnostics(state.copy(infoVisible = false)))
+    }
 }

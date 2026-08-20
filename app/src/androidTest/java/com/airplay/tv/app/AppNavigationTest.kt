@@ -19,6 +19,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.airplay.tv.protocol.SocketConnectionState
 import com.airplay.tv.diagnostics.DiagnosticLogEntry
+import com.airplay.tv.feature.player.Episode
 import com.airplay.tv.feature.player.playerConnectionStatusTopPadding
 import com.airplay.tv.session.SessionPage
 import com.airplay.tv.session.SessionUiState
@@ -238,6 +239,148 @@ class AppNavigationTest {
     }
 
     @Test
+    fun focusedEpisodePanelIsRightAlignedSingleColumnAndScrollsToFocus() {
+        val episodes = (1..12).map { index -> Episode("p$index", "第 $index 集") }
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    infoVisible = true,
+                    episodes = episodes,
+                    currentPid = "p1",
+                    episodePanelFocused = true,
+                    focusedEpisodeIndex = episodes.lastIndex,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        val panel = composeRule.onNodeWithTag("episode-panel")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val row = composeRule.onNodeWithTag("episode-row-p12")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+
+        assertTrue("episode panel is wider than 240dp: $panel", panel.right - panel.left <= 240.dp)
+        assertTrue("episode panel is narrower than 180dp: $panel", panel.right - panel.left >= 180.dp)
+        assertEquals(panel.left, row.left)
+        assertEquals(panel.right, row.right)
+        composeRule.onNodeWithTag("episode-focus-p12").assertIsDisplayed()
+        composeRule.onNodeWithTag("episode-focus-p1").assertDoesNotExist()
+        assertRightAligned("episode-panel")
+    }
+
+    @Test
+    fun singleEpisodeDoesNotShowEpisodePanel() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    infoVisible = true,
+                    episodes = listOf(Episode("p1", "第 1 集")),
+                    currentPid = "p1",
+                    episodePanelFocused = true,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("episode-panel").assertDoesNotExist()
+    }
+
+    @Test
+    fun playerSourceAndDiagnosticStayBelowProgressAtBottomRight() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    infoVisible = true,
+                    sourceName = "ffzy",
+                    durationMs = 30_000,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        composeRule.onNodeWithText("源 ffzy").assertIsDisplayed()
+        composeRule.onNodeWithTag("diagnostic-overlay-container").assertIsDisplayed()
+        assertRightAligned("diagnostic-overlay-container")
+        assertNoOverlap(
+            "diagnostic and progress",
+            "diagnostic-overlay-container",
+            "player-progress",
+        )
+        val diagnostic = composeRule.onNodeWithTag("diagnostic-overlay-container")
+            .getUnclippedBoundsInRoot()
+        val progress = composeRule.onNodeWithTag("player-progress")
+            .getUnclippedBoundsInRoot()
+        assertTrue("diagnostic must be below progress: diagnostic=$diagnostic progress=$progress", diagnostic.top >= progress.bottom)
+    }
+
+    @Test
+    fun playbackUrlGetsMoreWidthThanTitle() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    infoVisible = true,
+                    title = "影片标题",
+                    playbackUrl = "https://cdn.example/video/long-path/index.m3u8",
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        val title = composeRule.onNodeWithTag("player-title-column")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val url = composeRule.onNodeWithTag("player-playback-url")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+
+        assertTrue("URL must be wider than title: title=$title url=$url", url.right - url.left > title.right - title.left)
+    }
+
+    @Test
+    fun pairingAndPlayerConnectionStatusShareTopRightCoordinates() {
+        var state by mutableStateOf(
+            SessionUiState(
+                roomId = "room-1",
+                connection = SocketConnectionState.Connected,
+            ),
+        )
+        composeRule.setContent {
+            AppNavigation(state = state, player = player, onBack = {})
+        }
+
+        val pairingStatus = composeRule.onNodeWithTag("connection-status")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        assertRightAligned("connection-status")
+        assertEquals(40.dp, pairingStatus.top)
+
+        composeRule.runOnIdle {
+            state = state.copy(page = SessionPage.Player, infoVisible = true)
+        }
+        val playerStatus = composeRule.onNodeWithTag("connection-status")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+
+        assertEquals(pairingStatus.top, playerStatus.top)
+        assertEquals(pairingStatus.right, playerStatus.right)
+        assertRightAligned("connection-status")
+    }
+
+    @Test
     fun pairingShowsAndHidesGlobalDiagnosticOverlayWithoutHidingStatus() {
         var state by mutableStateOf(
             SessionUiState(
@@ -428,6 +571,12 @@ class AppNavigationTest {
         assertEquals(292.dp, statusBounds.top)
         assertEquals(292.dp, playerConnectionStatusTopPadding(qrVisible = true))
         assertEquals(40.dp, playerConnectionStatusTopPadding(qrVisible = false))
+    }
+
+    private fun assertRightAligned(tag: String) {
+        val root = composeRule.onRoot().getUnclippedBoundsInRoot()
+        val node = composeRule.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+        assertEquals(48.dp, root.right - node.right)
     }
 
     private fun assertNoOverlap(

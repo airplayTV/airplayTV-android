@@ -116,12 +116,6 @@ fun PairingScreen(
                 )
             }
         }
-
-        ConnectionStatus(
-            connection = state.connection,
-            controllerConnected = state.controllerConnected,
-            modifier = Modifier.align(Alignment.BottomEnd),
-        )
     }
 }
 
@@ -175,8 +169,8 @@ fun ConnectionStatus(
         modifier = modifier
             .clip(MaterialTheme.shapes.large)
             .background(Color(0xCC151D29))
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-            .testTag("connection-status"),
+            .testTag("connection-status")
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(

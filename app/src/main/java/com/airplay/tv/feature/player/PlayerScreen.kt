@@ -2,6 +2,9 @@ package com.airplay.tv.feature.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,13 +14,16 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -40,7 +46,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.airplay.tv.diagnostics.DiagnosticLogOverlay
-import com.airplay.tv.feature.pairing.ConnectionStatus
 import com.airplay.tv.session.SessionUiState
 import java.util.Locale
 
@@ -74,27 +79,14 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (shouldShowPlayerConnection(state)) {
-            ConnectionStatus(
-                connection = state.connection,
-                controllerConnected = state.controllerConnected,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(
-                        top = playerConnectionStatusTopPadding(state.qrVisible),
-                        end = 48.dp,
-                    ),
-            )
-        }
-
         if (shouldShowPlayerDiagnostics(state)) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 48.dp, bottom = 132.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 48.dp, bottom = 40.dp)
                     .testTag("diagnostic-overlay-container"),
             ) {
-                DiagnosticLogOverlay(logs = state.diagnosticLogs)
+                PlayerDiagnosticOverlay(state = state)
             }
         }
 
@@ -102,6 +94,15 @@ fun PlayerScreen(
             PlayerInfoOverlay(
                 state = state,
                 modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+
+        if (state.episodePanelFocused && state.episodes.size > 1) {
+            EpisodePanel(
+                state = state,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 104.dp, end = 48.dp),
             )
         }
 
@@ -131,7 +132,96 @@ internal fun playerConnectionStatusTopPadding(qrVisible: Boolean) =
     if (qrVisible) 292.dp else 40.dp
 
 internal fun shouldShowPlayerDiagnostics(state: SessionUiState): Boolean =
-    state.infoVisible && state.diagnosticLogs.isNotEmpty()
+    state.infoVisible && (state.sourceName.isNotBlank() || state.diagnosticLogs.isNotEmpty())
+
+@Composable
+private fun PlayerDiagnosticOverlay(
+    state: SessionUiState,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .widthIn(max = 560.dp)
+            .fillMaxWidth(),
+        horizontalAlignment = Alignment.End,
+    ) {
+        Text(
+            text = "源 ${state.sourceName.ifBlank { "--" }}",
+            modifier = Modifier
+                .background(Color(0xD90B111A), MaterialTheme.shapes.medium)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            color = Color(0xFFD6DEE8),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (state.diagnosticLogs.isNotEmpty()) {
+            DiagnosticLogOverlay(
+                logs = state.diagnosticLogs,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun EpisodePanel(
+    state: SessionUiState,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(state.focusedEpisodeIndex, state.episodes.size) {
+        if (state.focusedEpisodeIndex in state.episodes.indices) {
+            listState.animateScrollToItem(state.focusedEpisodeIndex)
+        }
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier
+            .widthIn(min = 180.dp, max = 240.dp)
+            .heightIn(max = 240.dp)
+            .background(Color(0xE6121B25), MaterialTheme.shapes.medium)
+            .testTag("episode-panel"),
+    ) {
+        items(state.episodes, key = Episode::id) { episode ->
+            EpisodeRow(state = state, episode = episode)
+        }
+    }
+}
+
+@Composable
+private fun EpisodeRow(
+    state: SessionUiState,
+    episode: Episode,
+) {
+    val focused = state.episodes.getOrNull(state.focusedEpisodeIndex)?.id == episode.id
+    val current = state.currentPid == episode.id
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .background(if (focused) Color(0x3329D3C2) else Color.Transparent)
+            .testTag("episode-row-${episode.id}"),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            text = episode.name,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .then(
+                    if (focused) Modifier.testTag("episode-focus-${episode.id}") else Modifier,
+                ),
+            color = if (focused || current) MaterialTheme.colorScheme.primary else Color.White,
+            fontSize = 16.sp,
+            fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
 
 @Composable
 private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifier) {
@@ -143,11 +233,15 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                     colors = listOf(Color.Transparent, Color(0xE6000000)),
                 ),
             )
-            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 40.dp)
+            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 248.dp)
             .testTag("player-info-overlay"),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("player-title-column"),
+            ) {
                 Text(
                     text = state.title.ifBlank { "正在播放" },
                     color = Color.White,
@@ -171,8 +265,9 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                 Text(
                     text = state.playbackUrl,
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 24.dp),
+                        .weight(1.8f)
+                        .padding(start = 24.dp)
+                        .testTag("player-playback-url"),
                     color = Color(0xFF9DAAB9),
                     fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,

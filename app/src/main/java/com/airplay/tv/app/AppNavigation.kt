@@ -34,10 +34,13 @@ import androidx.navigation.compose.rememberNavController
 import com.airplay.tv.feature.pairing.PairingQrContentCache
 import com.airplay.tv.feature.pairing.PairingQrImage
 import com.airplay.tv.feature.pairing.PairingScreen
+import com.airplay.tv.feature.pairing.ConnectionStatus
 import com.airplay.tv.feature.pairing.QrCodeGenerator
 import com.airplay.tv.feature.pairing.bitmapFor
 import com.airplay.tv.feature.pairing.middleEllipsizeRoomId
 import com.airplay.tv.feature.player.PlayerScreen
+import com.airplay.tv.feature.player.playerConnectionStatusTopPadding
+import com.airplay.tv.feature.player.shouldShowPlayerConnection
 import com.airplay.tv.diagnostics.DiagnosticLogOverlay
 import com.airplay.tv.session.SessionPage
 import com.airplay.tv.session.SessionUiState
@@ -113,6 +116,23 @@ fun AppNavigation(
             )
         }
 
+        if (state.page == SessionPage.Pairing || shouldShowPlayerConnection(state)) {
+            ConnectionStatus(
+                connection = state.connection,
+                controllerConnected = state.controllerConnected,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = if (state.page == SessionPage.Player) {
+                            playerConnectionStatusTopPadding(state.qrVisible)
+                        } else {
+                            40.dp
+                        },
+                        end = 48.dp,
+                    ),
+            )
+        }
+
         if (
             state.page == SessionPage.Pairing &&
             state.diagnosticVisible &&
@@ -120,8 +140,8 @@ fun AppNavigation(
         ) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 64.dp, bottom = 2.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 48.dp, bottom = 40.dp)
                     .testTag("diagnostic-overlay-container"),
             ) {
                 DiagnosticLogOverlay(
@@ -142,8 +162,8 @@ private fun PlayerQrCard(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF121B25))
-            .padding(12.dp)
-            .testTag("player-qr-card"),
+            .testTag("player-qr-card")
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
