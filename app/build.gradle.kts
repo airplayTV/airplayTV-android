@@ -58,6 +58,7 @@ dependencies {
     implementation(libs.coroutines.core) 
     implementation(libs.coroutines.android) 
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.datastore.preferences)
     implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
