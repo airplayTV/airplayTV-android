@@ -4,6 +4,7 @@ import java.io.Closeable
 import kotlin.math.roundToLong
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 
 enum class SocketConnectionState {
     Connecting,
@@ -21,8 +22,12 @@ interface SocketClient : Closeable {
     val states: StateFlow<SocketConnectionState>
     val connectionGeneration: StateFlow<Long>
     val commands: Flow<ReceivedControlCommand>
+    val playbackHistoryAcks: Flow<PlaybackHistoryAck>
+        get() = emptyFlow()
 
     fun connect(roomId: String)
+
+    fun sendPlaybackHistory(message: PlaybackHistoryMessage): Boolean = false
 
     override fun close()
 }

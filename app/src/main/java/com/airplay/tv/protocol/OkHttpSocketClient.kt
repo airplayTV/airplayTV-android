@@ -63,10 +63,16 @@ class OkHttpSocketClient internal constructor(
         extraBufferCapacity = COMMAND_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
+    private val mutablePlaybackHistoryAcks = MutableSharedFlow<PlaybackHistoryAck>(
+        extraBufferCapacity = ACK_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
 
     override val states: StateFlow<SocketConnectionState> = mutableStates.asStateFlow()
     override val connectionGeneration: StateFlow<Long> = mutableConnectionGeneration.asStateFlow()
     override val commands: Flow<ReceivedControlCommand> = mutableCommands.asSharedFlow()
+    override val playbackHistoryAcks: Flow<PlaybackHistoryAck> =
+        mutablePlaybackHistoryAcks.asSharedFlow()
 
     private var activeConnection: ConnectionContext? = null
     private var reconnectJob: Job? = null
@@ -91,6 +97,21 @@ class OkHttpSocketClient internal constructor(
         }
         previousSocket?.close(NORMAL_CLOSURE_CODE, NORMAL_CLOSURE_REASON)
         openWebSocket(connection)
+    }
+
+    override fun sendPlaybackHistory(message: PlaybackHistoryMessage): Boolean {
+        val payload = PlaybackHistoryProtocol.toJson(message)
+        return synchronized(lock) {
+            val connection = activeConnection ?: return@synchronized false
+            val webSocket = connection.webSocket ?: return@synchronized false
+            if (
+                !isCurrent(connection) ||
+                connection.phase != ConnectionPhase.Connected
+            ) {
+                return@synchronized false
+            }
+            webSocket.send(payload)
+        }
     }
 
     override fun close() {
@@ -174,6 +195,19 @@ class OkHttpSocketClient internal constructor(
                         connection.phase == ConnectionPhase.Connected
                 }
                 if (!isCurrent) {
+                    return
+                }
+                val ack = PlaybackHistoryProtocol.parseAck(text)
+                if (ack != null) {
+                    synchronized(lock) {
+                        if (
+                            isCurrent(connection) &&
+                            connection.webSocket === webSocket &&
+                            connection.phase == ConnectionPhase.Connected
+                        ) {
+                            mutablePlaybackHistoryAcks.tryEmit(ack)
+                        }
+                    }
                     return
                 }
                 val command = parser.parse(text, connection.roomId) ?: return
@@ -285,6 +319,7 @@ class OkHttpSocketClient internal constructor(
     }
 
     private companion object {
+        const val ACK_BUFFER_CAPACITY = 64
         const val COMMAND_BUFFER_CAPACITY = 64
         const val NORMAL_CLOSURE_CODE = 1000
         const val NORMAL_CLOSURE_REASON = "client closed"

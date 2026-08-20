@@ -1,5 +1,6 @@
 package com.airplay.tv.protocol
 
+import com.airplay.tv.feature.history.PlaybackRecord
 import com.google.gson.JsonParser
 import com.google.gson.JsonObject
 import java.io.IOException
@@ -105,6 +106,63 @@ class OkHttpSocketClientTest {
             ReceivedControlCommand(ControlCommand.Play, socketClient.connectionGeneration.value),
             received.await(),
         )
+    }
+
+    @Test
+    fun disconnectedSendReturnsFalseWithoutQueueing() {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher())
+
+        assertFalse(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
+        assertTrue(connector.connections.isEmpty())
+
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        assertFalse(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
+        assertTrue(connection.webSocket.sentTexts.isEmpty())
+
+        connection.open()
+        assertEquals(
+            listOf(expectedJoin("room-1").toString()),
+            connection.webSocket.sentTexts,
+        )
+    }
+
+    @Test
+    fun connectedSendWritesAllowlistedPlaybackHistoryDirectly() {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher())
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+
+        assertTrue(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
+
+        assertEquals(
+            PlaybackHistoryProtocol.toJson(playbackHistoryMessage()),
+            connection.webSocket.sentTexts.last(),
+        )
+    }
+
+    @Test
+    fun playbackHistoryAckUsesIndependentFlowAndIsNotAControlCommand() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val ack = async(start = CoroutineStart.UNDISPATCHED) {
+            socketClient.playbackHistoryAcks.first()
+        }
+        val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+
+        connection.message(
+            """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":true,"recipient_count":2}}""",
+        )
+
+        assertEquals(PlaybackHistoryAck("request-1", true, 2), ack.await())
+        assertFalse(command.isCompleted)
+        command.cancel()
     }
 
     @Test
@@ -612,6 +670,23 @@ class OkHttpSocketClientTest {
     }
 
     private companion object {
+        fun playbackHistoryMessage(): PlaybackHistoryMessage = PlaybackHistoryMessage(
+            requestId = "request-1",
+            group = "room-1",
+            record = PlaybackRecord(
+                source = "source-1",
+                vid = "vid-1",
+                pid = "pid-1",
+                title = "Title",
+                episodeName = "Episode 1",
+                thumb = "https://images.example/thumb.jpg",
+                positionMs = 12_345L,
+                durationMs = 60_000L,
+                completed = false,
+                updatedAtMs = 1_787_190_000_000L,
+            ),
+        )
+
         fun controlMessage(event: String, roomId: String): String =
             JsonObject().apply {
                 addProperty("event", event)
