@@ -42,6 +42,7 @@ fun App(
                         keyCode = nativeEvent.keyCode,
                         keyAction = nativeEvent.action,
                         repeatCount = nativeEvent.repeatCount,
+                        episodePanelFocused = state.episodePanelFocused,
                         onRemoteControl = onRemoteControl,
                     )
                 }
@@ -62,10 +63,11 @@ internal fun handleTvRemoteKey(
     keyCode: Int,
     keyAction: Int,
     repeatCount: Int,
+    episodePanelFocused: Boolean,
     onRemoteControl: (RemoteControlAction) -> Unit,
 ): Boolean {
     if (page != SessionPage.Player) return false
-    val action = mapTvRemoteKey(keyCode, keyAction, repeatCount) ?: return false
+    val action = mapTvRemoteKey(keyCode, keyAction, repeatCount, episodePanelFocused) ?: return false
     onRemoteControl(action)
     return true
 }

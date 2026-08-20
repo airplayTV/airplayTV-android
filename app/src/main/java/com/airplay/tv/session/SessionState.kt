@@ -31,6 +31,8 @@ data class SessionUiState(
     val sourceName: String = "",
     val episodes: List<Episode> = emptyList(),
     val currentPid: String = "",
+    val episodePanelFocused: Boolean = false,
+    val focusedEpisodeIndex: Int = 0,
     val syncStatus: PlaybackSyncStatus = PlaybackSyncStatus.Idle,
     val error: String? = null,
     val playbackUrl: String = "",

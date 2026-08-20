@@ -184,6 +184,7 @@ class SessionViewModel(
 
     fun onBack() {
         when {
+            mutableUiState.value.episodePanelFocused -> exitEpisodes()
             mutableUiState.value.qrVisible -> {
                 mutableUiState.update { it.copy(qrVisible = false) }
             }
@@ -324,6 +325,8 @@ class SessionViewModel(
                 sourceName = command.source,
                 episodes = episodes,
                 currentPid = command.pid,
+                episodePanelFocused = false,
+                focusedEpisodeIndex = 0,
                 syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
                 error = null,
@@ -626,6 +629,12 @@ class SessionViewModel(
     }
 
     private fun showInfoTemporarily() {
+        if (mutableUiState.value.episodePanelFocused) {
+            overlayJob?.cancel()
+            overlayJob = null
+            mutableUiState.update { it.copy(infoVisible = true) }
+            return
+        }
         val revision = ++overlayRevision
         overlayJob?.cancel()
         mutableUiState.update { it.copy(infoVisible = true) }
@@ -638,6 +647,11 @@ class SessionViewModel(
     }
 
     private fun hideInfo() {
+        if (mutableUiState.value.episodePanelFocused) {
+            overlayJob?.cancel()
+            overlayJob = null
+            return
+        }
         overlayRevision += 1
         overlayJob?.cancel()
         overlayJob = null
@@ -647,18 +661,73 @@ class SessionViewModel(
     fun onRemoteControl(action: RemoteControlAction) {
         if (mutableUiState.value.page != SessionPage.Player) return
 
-        val control = when (action) {
-            RemoteControlAction.Play -> MediaControl.Play
-            RemoteControlAction.Pause -> MediaControl.Pause
-            RemoteControlAction.TogglePlayPause -> if (mutableUiState.value.isPlaying) {
-                MediaControl.Pause
-            } else {
-                MediaControl.Play
-            }
-            RemoteControlAction.Forward -> MediaControl.Forward
-            RemoteControlAction.Back -> MediaControl.Back
+        when (action) {
+            RemoteControlAction.OpenEpisodes -> openEpisodes()
+            RemoteControlAction.EpisodeUp -> moveEpisodeFocus(-1)
+            RemoteControlAction.EpisodeDown -> moveEpisodeFocus(1)
+            RemoteControlAction.SelectEpisode -> selectFocusedEpisode()
+            RemoteControlAction.ExitEpisodes -> exitEpisodes()
+            else -> handleMediaControl(
+                when (action) {
+                    RemoteControlAction.Play -> MediaControl.Play
+                    RemoteControlAction.Pause -> MediaControl.Pause
+                    RemoteControlAction.TogglePlayPause -> if (mutableUiState.value.isPlaying) {
+                        MediaControl.Pause
+                    } else {
+                        MediaControl.Play
+                    }
+                    RemoteControlAction.Forward -> MediaControl.Forward
+                    RemoteControlAction.Back -> MediaControl.Back
+                    else -> error("Unhandled remote control action: $action")
+                },
+            )
         }
-        handleMediaControl(control)
+    }
+
+    private fun openEpisodes() {
+        if (episodes.size <= 1) return
+        overlayRevision += 1
+        overlayJob?.cancel()
+        overlayJob = null
+        mutableUiState.update {
+            it.copy(
+                infoVisible = true,
+                episodePanelFocused = true,
+                focusedEpisodeIndex = episodes.indexOfFirst { episode ->
+                    episode.id == currentLoadCommand?.pid
+                }.coerceAtLeast(0),
+            )
+        }
+    }
+
+    private fun moveEpisodeFocus(offset: Int) {
+        if (!mutableUiState.value.episodePanelFocused || episodes.isEmpty()) return
+        mutableUiState.update {
+            it.copy(
+                focusedEpisodeIndex = (it.focusedEpisodeIndex + offset)
+                    .coerceIn(0, episodes.lastIndex),
+            )
+        }
+    }
+
+    private fun selectFocusedEpisode() {
+        val state = mutableUiState.value
+        if (!state.episodePanelFocused) return
+        val target = episodes.getOrNull(state.focusedEpisodeIndex)
+        val command = currentLoadCommand
+        if (target == null || command == null || target.id == command.pid) {
+            exitEpisodes()
+            return
+        }
+        mutableUiState.update { it.copy(episodePanelFocused = false) }
+        loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
+        showInfoTemporarily()
+    }
+
+    private fun exitEpisodes() {
+        if (!mutableUiState.value.episodePanelFocused) return
+        mutableUiState.update { it.copy(episodePanelFocused = false) }
+        showInfoTemporarily()
     }
 
     private fun appendDiagnostic(entry: DiagnosticLogEntry) {
@@ -933,7 +1002,7 @@ class SessionViewModel(
 
     private companion object {
         const val SEEK_STEP_MS = 15_000L
-        const val INFO_TIMEOUT_MS = 5_000L
+        const val INFO_TIMEOUT_MS = 10_000L
         const val DIAGNOSTIC_TIMEOUT_MS = 5_000L
         const val LOCAL_PROGRESS_INTERVAL_MS = 5_000L
         const val REMOTE_PROGRESS_INTERVAL_MS = 30_000L

@@ -760,7 +760,7 @@ class SessionViewModelTest {
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
-        advanceTimeBy(100)
+        advanceTimeBy(5_100)
         runCurrent()
 
         assertFalse(viewModel.uiState.value.infoVisible)
@@ -848,6 +848,150 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun episodePanelFreezesOverlayForTenSecondsAndLoadsFocusedEpisode() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+
+        assertTrue(viewModel.uiState.value.infoVisible)
+        assertTrue(viewModel.uiState.value.episodePanelFocused)
+        assertEquals(0, viewModel.uiState.value.focusedEpisodeIndex)
+        viewModel.onRemoteControl(RemoteControlAction.EpisodeUp)
+        assertEquals(0, viewModel.uiState.value.focusedEpisodeIndex)
+        advanceTimeBy(10_001)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+
+        viewModel.onRemoteControl(RemoteControlAction.EpisodeDown)
+        assertEquals(1, viewModel.uiState.value.focusedEpisodeIndex)
+        viewModel.onRemoteControl(RemoteControlAction.SelectEpisode)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+        assertEquals("p2", api.sourceCalls.last().pid)
+    }
+
+    @Test
+    fun exitingEpisodePanelRestartsTenSecondOverlayTimer() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+        viewModel.onRemoteControl(RemoteControlAction.ExitEpisodes)
+
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun selectingCurrentEpisodeClosesPanelWithoutReloading() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+        viewModel.onRemoteControl(RemoteControlAction.SelectEpisode)
+
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+        assertTrue(viewModel.uiState.value.infoVisible)
+        assertTrue(api.sourceCalls.isEmpty())
+    }
+
+    @Test
+    fun selectingAnotherEpisodeKeepsItsTimerAnchoredToSelectionTime() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        api.sourceResponse = { vid, pid ->
+            if (pid == "p2") delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+        viewModel.onRemoteControl(RemoteControlAction.EpisodeDown)
+        viewModel.onRemoteControl(RemoteControlAction.SelectEpisode)
+        advanceTimeBy(1_000)
+        runCurrent()
+        advanceTimeBy(9_000)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun backExitsFocusedEpisodePanelAndRestartsOverlayTimer() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+        viewModel.onBack()
+
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
+    fun openingEpisodePanelFocusesCurrentEpisodeAndRequiresMultipleEpisodes() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+            }
+            startCollectors()
+            socket.emit(load("series", "p2"))
+            advanceUntilIdle()
+
+            viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+
+            assertTrue(viewModel.uiState.value.episodePanelFocused)
+            assertEquals(1, viewModel.uiState.value.focusedEpisodeIndex)
+        }
+
+    @Test
+    fun openingEpisodePanelDoesNothingForSingleEpisode() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+    }
+
+    @Test
     fun remoteControlsUseSamePlayerPathAsSocketControls() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("video", "p1"))
@@ -932,25 +1076,29 @@ class SessionViewModelTest {
         advanceTimeBy(1_000)
         runCurrent()
 
-        assertFalse(viewModel.uiState.value.infoVisible)
+        assertTrue(viewModel.uiState.value.infoVisible)
         assertTrue(viewModel.uiState.value.diagnosticVisible)
+
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
     }
 
     @Test
-    fun playbackOverlayUsesCancelableFiveSecondTimer() = runTest(dispatcher) {
+    fun playbackOverlayUsesCancelableTenSecondTimer() = runTest(dispatcher) {
         startCollectors()
 
         socket.emit(ControlCommand.Play)
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
-        advanceTimeBy(4_999)
+        advanceTimeBy(9_999)
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
         socket.emit(ControlCommand.Pause)
         runCurrent()
-        advanceTimeBy(4_999)
+        advanceTimeBy(9_999)
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
@@ -960,14 +1108,14 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun successfulLoadShowsOverlayForExactlyFiveSeconds() = runTest(dispatcher) {
+    fun successfulLoadShowsOverlayForExactlyTenSeconds() = runTest(dispatcher) {
         startCollectors()
 
         socket.emit(load("video", "p1"))
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
-        advanceTimeBy(4_999)
+        advanceTimeBy(9_999)
         runCurrent()
         assertTrue(viewModel.uiState.value.infoVisible)
 
@@ -982,7 +1130,7 @@ class SessionViewModelTest {
             startCollectors()
             socket.emit(load("first", "p1"))
             advanceUntilIdle()
-            advanceTimeBy(5_000)
+            advanceTimeBy(10_000)
             runCurrent()
             assertFalse(viewModel.uiState.value.infoVisible)
 
@@ -1025,7 +1173,7 @@ class SessionViewModelTest {
             runCurrent()
             assertTrue(viewModel.uiState.value.infoVisible)
 
-            advanceTimeBy(4_999)
+            advanceTimeBy(9_999)
             runCurrent()
             assertTrue(viewModel.uiState.value.infoVisible)
             advanceTimeBy(1)
@@ -1483,7 +1631,7 @@ class SessionViewModelTest {
             socket.emit(ControlCommand.Previous)
             runCurrent()
             assertTrue(viewModel.uiState.value.infoVisible)
-            advanceTimeBy(4_999)
+            advanceTimeBy(9_999)
             runCurrent()
             assertTrue(viewModel.uiState.value.infoVisible)
             advanceTimeBy(1)
