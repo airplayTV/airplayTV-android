@@ -113,7 +113,8 @@ class MainActivityLifecycleTest {
             url: String,
             mediaType: ResolvedMediaType,
             startPositionMs: Long,
-        ) = delegate.load(url, mediaType, startPositionMs)
+            mediaToken: Long,
+        ) = delegate.load(url, mediaType, startPositionMs, mediaToken)
 
         override fun play() {
             calls += "play"
@@ -163,5 +164,9 @@ class MainActivityLifecycleTest {
         override suspend fun latest(): PlaybackRecord? = null
 
         override suspend fun save(record: PlaybackRecord) = Unit
+
+        override fun enqueueSave(record: PlaybackRecord) = Unit
+
+        override suspend fun drain() = Unit
     }
 }

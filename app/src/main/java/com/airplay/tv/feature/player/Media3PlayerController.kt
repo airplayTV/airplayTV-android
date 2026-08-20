@@ -39,7 +39,6 @@ class Media3PlayerController(context: Context) : PlayerController {
     private val mutableState = MutableStateFlow(PlayerState())
     private val mutableEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
     private val retryGate = SingleRetryGate()
-    private val playbackEndGate = PlaybackEndGate()
     private val lifecycle = ControllerLifecycleGate()
     private val bufferingStateListener = BufferingStateListener(mutableState)
 
@@ -47,6 +46,7 @@ class Media3PlayerController(context: Context) : PlayerController {
     override val events: Flow<PlaybackEvent> = mutableEvents.asSharedFlow()
 
     private var lastAudibleVolume: Int? = currentVolume().takeIf { it > 0 }
+    private var playbackEndListener: TokenizedPlaybackEndListener? = null
 
     private val positionUpdater = object : Runnable {
         override fun run() {
@@ -69,9 +69,6 @@ class Media3PlayerController(context: Context) : PlayerController {
         override fun onPlaybackStateChanged(playbackState: Int) {
             bufferingStateListener.onPlaybackStateChanged(playbackState)
             publishPlaybackState()
-            if (playbackState == Player.STATE_ENDED && playbackEndGate.tryAcquire()) {
-                mutableEvents.tryEmit(PlaybackEvent.Ended)
-            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -98,11 +95,12 @@ class Media3PlayerController(context: Context) : PlayerController {
         url: String,
         mediaType: ResolvedMediaType,
         startPositionMs: Long,
+        mediaToken: Long,
     ) {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
-        playbackEndGate.reset()
+        replacePlaybackEndListener(mediaToken)
         lifecycle.onLoad()
         mutableState.value = PlayerState()
         loadPlayer(player, buildMediaItem(url, mediaType), startPositionMs)
@@ -168,7 +166,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         if (!lifecycle.tryClear()) return
         stopPositionUpdates()
         retryGate.reset()
-        playbackEndGate.invalidate()
+        removePlaybackEndListener()
         player.stop()
         player.clearMediaItems()
         mutableState.value = PlayerState()
@@ -179,7 +177,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         checkMainThread()
         if (!lifecycle.tryRelease()) return
         stopPositionUpdates()
-        playbackEndGate.invalidate()
+        removePlaybackEndListener()
         player.removeListener(listener)
         player.release()
         mutableState.value = PlayerState()
@@ -197,6 +195,21 @@ class Media3PlayerController(context: Context) : PlayerController {
 
     private fun stopPositionUpdates() {
         handler.removeCallbacks(positionUpdater)
+    }
+
+    private fun replacePlaybackEndListener(mediaToken: Long) {
+        removePlaybackEndListener()
+        playbackEndListener = TokenizedPlaybackEndListener(mediaToken) { token ->
+            mutableEvents.tryEmit(PlaybackEvent.Ended(token))
+        }.also(player::addListener)
+    }
+
+    private fun removePlaybackEndListener() {
+        playbackEndListener?.let { listener ->
+            listener.invalidate()
+            player.removeListener(listener)
+        }
+        playbackEndListener = null
     }
 
     private fun publishPlaybackState(
@@ -310,6 +323,23 @@ internal class PlaybackEndGate {
 
     fun invalidate() {
         available = false
+    }
+}
+
+internal class TokenizedPlaybackEndListener(
+    private val mediaToken: Long,
+    private val onEnded: (Long) -> Unit,
+) : Player.Listener {
+    private val gate = PlaybackEndGate().apply { reset() }
+
+    override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_ENDED && gate.tryAcquire()) {
+            onEnded(mediaToken)
+        }
+    }
+
+    fun invalidate() {
+        gate.invalidate()
     }
 }
 

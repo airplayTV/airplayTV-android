@@ -15,6 +15,7 @@ data class PlaybackRecord(
     val durationMs: Long,
     val completed: Boolean,
     val updatedAtMs: Long,
+    val revision: Long = 0,
 ) {
     fun resumePositionMs(): Long = if (completed) 0L else positionMs.coerceAtLeast(0L)
 }

@@ -19,9 +19,14 @@ import com.airplay.tv.protocol.ReceivedControlCommand
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -35,6 +40,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -52,6 +58,7 @@ class SessionViewModelTest {
     private lateinit var playerController: FakePlayerController
     private lateinit var repository: FakePlaybackProgressRepository
     private lateinit var viewModel: SessionViewModel
+    private var wallClockMs: Long? = null
 
     @Before
     fun setUp() {
@@ -59,7 +66,9 @@ class SessionViewModelTest {
         socket = FakeSocketClient()
         api = FakeVideoApi()
         playerController = FakePlayerController()
-        repository = FakePlaybackProgressRepository()
+        repository = FakePlaybackProgressRepository(
+            CoroutineScope(SupervisorJob() + dispatcher),
+        )
         viewModel = createViewModel()
         viewModel.onForegroundChanged(true)
     }
@@ -67,6 +76,7 @@ class SessionViewModelTest {
     @After
     fun tearDown() {
         invokeOnCleared(viewModel)
+        repository.close()
         Dispatchers.resetMain()
     }
 
@@ -216,7 +226,7 @@ class SessionViewModelTest {
             PlayerState(isPlaying = true, positionMs = 99_000, durationMs = 100_000),
         )
         runCurrent()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         runCurrent()
         playerController.setState(PlayerState(isPlaying = false))
         runCurrent()
@@ -322,7 +332,6 @@ class SessionViewModelTest {
             playerController.setState(PlayerState(isPlaying = false))
             runCurrent()
             val currentRequestId = socket.playbackHistorySendAttempts.last().requestId
-            assertEquals("p2", repository.latest()!!.pid)
 
             socket.emitPlaybackHistoryAck(
                 PlaybackHistoryAck(oldRequestId, accepted = false, recipientCount = 0),
@@ -337,6 +346,7 @@ class SessionViewModelTest {
 
             advanceTimeBy(1_000)
             runCurrent()
+            repository.drain()
             assertEquals("p2", repository.latest()!!.pid)
             assertEquals(22_000, repository.latest()!!.positionMs)
         }
@@ -364,14 +374,14 @@ class SessionViewModelTest {
             )
             runCurrent()
 
-            playerController.emitEnded()
+            playerController.emitEnded(playerController.loadedMediaTokens.last())
             advanceUntilIdle()
 
             assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
             assertTrue(repository.find("source-a", "series", "p1")!!.completed)
             assertEquals(27_000, playerController.loadedStartPositions.last())
 
-            playerController.emitEnded()
+            playerController.emitEnded(playerController.loadedMediaTokens.last())
             advanceUntilIdle()
             assertEquals(1, api.sourceCalls.count { it.pid == "p2" })
         }
@@ -1064,7 +1074,7 @@ class SessionViewModelTest {
             advanceUntilIdle()
             api.sourceCalls.clear()
 
-            playerController.emitEnded()
+            playerController.emitEnded(playerController.loadedMediaTokens.last())
             advanceUntilIdle()
 
             assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
@@ -1073,11 +1083,93 @@ class SessionViewModelTest {
             assertEquals("Series title", viewModel.uiState.value.title)
             assertEquals("Episode 2", viewModel.uiState.value.episodeName)
 
-            playerController.emitEnded()
+            playerController.emitEnded(playerController.loadedMediaTokens.last())
             advanceUntilIdle()
             assertEquals(listOf("p2", "p3"), api.sourceCalls.map { it.pid })
             assertEquals("private-mode", api.sourceCalls.last().mode)
         }
+
+    @Test
+    fun failedReplacementRestartsProgressJobsForCommittedPlayingMedia() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 15_000, durationMs = 100_000),
+        )
+        runCurrent()
+        api.sourceResponse = { vid, pid ->
+            if (pid == "p2") throw IllegalStateException("replacement failed")
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+
+        socket.emit(load("series", "p2", source = "source-a"))
+        runCurrent()
+        repository.drain()
+        repository.saveAttempts.clear()
+        socket.playbackHistorySendAttempts.clear()
+
+        advanceTimeBy(4_999)
+        runCurrent()
+        assertTrue(repository.saveAttempts.isEmpty())
+        advanceTimeBy(1)
+        runCurrent()
+        repository.drain()
+        assertEquals(listOf("p1"), repository.saveAttempts.map { it.pid })
+
+        advanceTimeBy(24_999)
+        runCurrent()
+        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(
+            listOf("p1"),
+            socket.playbackHistorySendAttempts.map { it.record.pid },
+        )
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+    }
+
+    @Test
+    fun staleEndedTokenCannotCompleteReplacementOrAdvanceAgain() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail(
+                "Series",
+                "p1" to "Episode 1",
+                "p2" to "Episode 2",
+                "p3" to "Episode 3",
+            )
+        }
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        val p1Token = playerController.loadedMediaTokens.single()
+
+        playerController.emitEnded(p1Token)
+        advanceUntilIdle()
+        val p2Token = playerController.loadedMediaTokens.last()
+        api.sourceCalls.clear()
+        playerController.setState(
+            PlayerState(isPlaying = false, positionMs = 20_000, durationMs = 100_000),
+        )
+        runCurrent()
+
+        playerController.emitEnded(p1Token)
+        runCurrent()
+        repository.drain()
+
+        assertTrue(api.sourceCalls.isEmpty())
+        assertTrue(repository.find("source-a", "series", "p2")?.completed != true)
+
+        playerController.emitEnded(p2Token)
+        runCurrent()
+        repository.drain()
+        playerController.emitEnded(p2Token)
+        runCurrent()
+
+        assertEquals(listOf("p3"), api.sourceCalls.map { it.pid })
+        assertEquals(true, repository.find("source-a", "series", "p2")?.completed)
+    }
 
     @Test
     fun playbackEndOnFinalEpisodeDoesNotLoopOrResolveAnotherSource() = runTest(dispatcher) {
@@ -1089,7 +1181,7 @@ class SessionViewModelTest {
         advanceUntilIdle()
         api.sourceCalls.clear()
 
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         advanceUntilIdle()
 
         assertTrue(api.sourceCalls.isEmpty())
@@ -1104,7 +1196,7 @@ class SessionViewModelTest {
         socket.emit(load("series", "p1"))
         advanceUntilIdle()
 
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         advanceUntilIdle()
 
         assertEquals("剧集列表不可用", viewModel.uiState.value.diagnosticLogs.last().message)
@@ -1143,8 +1235,8 @@ class SessionViewModelTest {
             successfulSource("https://cdn/$vid-$pid.m3u8")
         }
 
-        playerController.emitEnded()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         runCurrent()
 
         assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
@@ -1164,8 +1256,8 @@ class SessionViewModelTest {
         assertEquals("https://cdn/series-p1.m3u8", playerController.loadedUrl)
         api.sourceCalls.clear()
 
-        playerController.emitEnded()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         runCurrent()
         assertTrue(api.sourceCalls.isEmpty())
 
@@ -1189,7 +1281,7 @@ class SessionViewModelTest {
         startCollectors()
         socket.emit(load("series", "p1"))
         runCurrent()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         runCurrent()
 
         socket.emit(load("replacement", "q1", mode = "new-mode"))
@@ -1211,7 +1303,7 @@ class SessionViewModelTest {
         startCollectors()
         socket.emit(load("series", "p1"))
         runCurrent()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         runCurrent()
 
         socket.emit(ControlCommand.Next)
@@ -1232,9 +1324,9 @@ class SessionViewModelTest {
         api.sourceCalls.clear()
         api.sourceResponse = { _, _ -> throw IllegalStateException("secret failure") }
 
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         advanceUntilIdle()
-        playerController.emitEnded()
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
         advanceUntilIdle()
 
         assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
@@ -1247,7 +1339,7 @@ class SessionViewModelTest {
     fun playbackEndOutsidePlayerPageDoesNotResolveSource() = runTest(dispatcher) {
         startCollectors()
 
-        playerController.emitEnded()
+        playerController.emitEnded(Long.MIN_VALUE)
         advanceUntilIdle()
 
         assertTrue(api.sourceCalls.isEmpty())
@@ -1662,6 +1754,81 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun backgroundSnapshotSurvivesImmediateViewModelClear() = runTest(dispatcher) {
+        repository.beforeSave = { delay(1_000) }
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        repository.saveAttempts.clear()
+        socket.playbackHistorySendAttempts.clear()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 41_000, durationMs = 100_000),
+        )
+        runCurrent()
+
+        viewModel.onForegroundChanged(false)
+
+        assertEquals(1, socket.playbackHistorySendAttempts.size)
+        assertEquals("p1", socket.playbackHistorySendAttempts.single().record.pid)
+        invokeOnCleared(viewModel)
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertEquals(41_000L, repository.find("source-a", "series", "p1")?.positionMs)
+    }
+
+    @Test
+    fun snapshotOrderSurvivesSameMillisecondClockRollbackAndNewViewModel() = runTest(dispatcher) {
+        wallClockMs = 100
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 10_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        repository.drain()
+        val first = checkNotNull(repository.find("source-a", "series", "p1"))
+
+        invokeOnCleared(viewModel)
+        socket = FakeSocketClient()
+        api = FakeVideoApi()
+        playerController = FakePlayerController()
+        viewModel = createViewModel()
+        viewModel.onForegroundChanged(true)
+        startCollectors()
+        socket.emit(load("series", "p2", source = "source-a"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 20_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        repository.drain()
+        val sameMillisecond = checkNotNull(repository.find("source-a", "series", "p2"))
+
+        wallClockMs = 90
+        viewModel.onForegroundChanged(true)
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 30_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        repository.drain()
+        val rolledBack = checkNotNull(repository.find("source-a", "series", "p2"))
+
+        assertEquals(100L, first.updatedAtMs)
+        assertEquals(100L, sameMillisecond.updatedAtMs)
+        assertEquals(90L, rolledBack.updatedAtMs)
+        assertTrue(rolledBack.updatedAtMs <= checkNotNull(wallClockMs))
+        assertTrue(first.revision < sameMillisecond.revision)
+        assertTrue(sameMillisecond.revision < rolledBack.revision)
+        assertEquals("p2", repository.latest()?.pid)
+        assertEquals(30_000L, repository.latest()?.positionMs)
+    }
+
+    @Test
     fun onClearedPreventsNonCooperativeResolveFromLoadingPlayer() = runTest(dispatcher) {
         api.sourceResponse = { vid, pid ->
             withContext(NonCancellable) { delay(1_000) }
@@ -1717,7 +1884,7 @@ class SessionViewModelTest {
         videoResolver = VideoResolver(api),
         playerController = playerController,
         playbackProgressRepository = repository,
-        nowMs = { dispatcher.scheduler.currentTime },
+        nowMs = { wallClockMs ?: dispatcher.scheduler.currentTime },
         requestIdFactory = { "request-${socket.playbackHistorySendAttempts.size + 1}" },
     )
 
@@ -1817,17 +1984,35 @@ class SessionViewModelTest {
         val mode: String,
     )
 
-    private class FakePlaybackProgressRepository : PlaybackProgressRepository {
+    private class FakePlaybackProgressRepository(
+        private val persistenceScope: CoroutineScope,
+    ) : PlaybackProgressRepository {
         private val records = linkedMapOf<Triple<String, String, String>, PlaybackRecord>()
         private var latestRecord: PlaybackRecord? = null
+        private var revisionCounter = 0L
+        private val saveQueue = Channel<SaveQueueEntry>(Channel.UNLIMITED)
         val saveAttempts = mutableListOf<PlaybackRecord>()
         var findResponse: suspend (String, String, String) -> PlaybackRecord? =
             { source, vid, pid -> records[Triple(source, vid, pid)] }
         var beforeSave: suspend (PlaybackRecord) -> Unit = {}
 
+        init {
+            persistenceScope.launch {
+                for (entry in saveQueue) {
+                    when (entry) {
+                        is SaveQueueEntry.Save -> {
+                            revisionCounter += 1
+                            save(entry.record.copy(revision = revisionCounter))
+                        }
+                        is SaveQueueEntry.Barrier -> entry.completion.complete(Unit)
+                    }
+                }
+            }
+        }
+
         fun seed(record: PlaybackRecord) {
             records[record.key()] = record
-            if (latestRecord == null || record.updatedAtMs >= checkNotNull(latestRecord).updatedAtMs) {
+            if (latestRecord == null || compareCaptureOrder(record, checkNotNull(latestRecord)) >= 0) {
                 latestRecord = record
             }
         }
@@ -1841,18 +2026,43 @@ class SessionViewModelTest {
             saveAttempts += record
             beforeSave(record)
             val existing = records[record.key()]
-            if (existing == null || record.updatedAtMs >= existing.updatedAtMs) {
+            if (existing == null || compareCaptureOrder(record, existing) >= 0) {
                 records[record.key()] = record
                 if (
                     latestRecord == null ||
-                    record.updatedAtMs >= checkNotNull(latestRecord).updatedAtMs
+                    compareCaptureOrder(record, checkNotNull(latestRecord)) >= 0
                 ) {
                     latestRecord = record
                 }
             }
         }
 
+        override fun enqueueSave(record: PlaybackRecord) {
+            check(saveQueue.trySend(SaveQueueEntry.Save(record)).isSuccess)
+        }
+
+        override suspend fun drain() {
+            val completion = CompletableDeferred<Unit>()
+            saveQueue.send(SaveQueueEntry.Barrier(completion))
+            completion.await()
+        }
+
+        fun close() {
+            persistenceScope.cancel()
+        }
+
         private fun PlaybackRecord.key() = Triple(source, vid, pid)
+
+        private fun compareCaptureOrder(left: PlaybackRecord, right: PlaybackRecord): Int = when {
+            left.revision > 0 || right.revision > 0 -> left.revision.compareTo(right.revision)
+            else -> left.updatedAtMs.compareTo(right.updatedAtMs)
+        }
+
+        private sealed interface SaveQueueEntry {
+            data class Save(val record: PlaybackRecord) : SaveQueueEntry
+
+            data class Barrier(val completion: CompletableDeferred<Unit>) : SaveQueueEntry
+        }
     }
 
     private companion object {

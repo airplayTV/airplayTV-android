@@ -54,6 +54,31 @@ class DataStorePlaybackProgressRepositoryTest {
     }
 
     @Test
+    fun queuedRevisionPersistsAcrossRepositoryInstancesAndClockRollback() = runTest {
+        val dataStore = dataStore(backgroundScope)
+        val firstRepository = DataStorePlaybackProgressRepository(
+            dataStore = dataStore,
+            persistenceScope = backgroundScope,
+        )
+        firstRepository.enqueueSave(record(pid = "first", updatedAtMs = 100))
+        firstRepository.enqueueSave(record(pid = "second", updatedAtMs = 100))
+        firstRepository.drain()
+
+        val secondRepository = DataStorePlaybackProgressRepository(
+            dataStore = dataStore,
+            persistenceScope = backgroundScope,
+        )
+        secondRepository.enqueueSave(record(pid = "third", updatedAtMs = 90))
+        secondRepository.drain()
+
+        assertEquals(1L, firstRepository.find("source", "vid", "first")?.revision)
+        assertEquals(2L, firstRepository.find("source", "vid", "second")?.revision)
+        assertEquals(3L, secondRepository.find("source", "vid", "third")?.revision)
+        assertEquals(90L, secondRepository.latest()?.updatedAtMs)
+        assertEquals("third", secondRepository.latest()?.pid)
+    }
+
+    @Test
     fun olderSaveForSameKeyDoesNotOverwriteRecordOrLatest() = runTest {
         val repository = repository(backgroundScope)
         val newer = record(pid = "same", updatedAtMs = 20).copy(positionMs = 20_000)

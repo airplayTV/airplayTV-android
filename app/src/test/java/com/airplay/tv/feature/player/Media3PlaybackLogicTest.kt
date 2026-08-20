@@ -87,9 +87,25 @@ class Media3PlaybackLogicTest {
     fun fakePlayerRecordsInitialLoadPosition() {
         val player = FakePlayerController()
 
-        player.load("https://cdn.example/episode.m3u8", ResolvedMediaType.HLS, 42_000L)
+        player.load(
+            "https://cdn.example/episode.m3u8",
+            ResolvedMediaType.HLS,
+            42_000L,
+            mediaToken = 7,
+        )
 
         assertEquals(listOf(42_000L), player.loadedStartPositions)
+    }
+
+    @Test
+    fun endedListenerEmitsItsLoadTokenOnlyOnce() {
+        val tokens = mutableListOf<Long>()
+        val listener = TokenizedPlaybackEndListener(mediaToken = 7, onEnded = tokens::add)
+
+        listener.onPlaybackStateChanged(Player.STATE_ENDED)
+        listener.onPlaybackStateChanged(Player.STATE_ENDED)
+
+        assertEquals(listOf(7L), tokens)
     }
 
     @Test

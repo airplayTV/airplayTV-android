@@ -21,6 +21,7 @@ class FakePlayerController(
     val loadedUrls = mutableListOf<String>()
     val loadedMediaTypes = mutableListOf<ResolvedMediaType>()
     val loadedStartPositions = mutableListOf<Long>()
+    val loadedMediaTokens = mutableListOf<Long>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
     var loadedUrl: String? = null
@@ -34,11 +35,11 @@ class FakePlayerController(
         calls.clear()
     }
 
-    fun emitEnded() {
+    fun emitEnded(mediaToken: Long) {
         check(mutableEvents.subscriptionCount.value > 0) {
             "Playback event collector must be started before emitEnded()"
         }
-        check(mutableEvents.tryEmit(PlaybackEvent.Ended))
+        check(mutableEvents.tryEmit(PlaybackEvent.Ended(mediaToken)))
     }
 
     fun emitError() {
@@ -48,11 +49,17 @@ class FakePlayerController(
         check(mutableEvents.tryEmit(PlaybackEvent.Error))
     }
 
-    override fun load(url: String, mediaType: ResolvedMediaType, startPositionMs: Long) {
+    override fun load(
+        url: String,
+        mediaType: ResolvedMediaType,
+        startPositionMs: Long,
+        mediaToken: Long,
+    ) {
         calls += "load:$url"
         loadedUrls += url
         loadedMediaTypes += mediaType
         loadedStartPositions += startPositionMs
+        loadedMediaTokens += mediaToken
         loadedUrl = url
     }
 

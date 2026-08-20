@@ -13,7 +13,7 @@ data class PlayerState(
 )
 
 sealed interface PlaybackEvent {
-    data object Ended : PlaybackEvent
+    data class Ended(val mediaToken: Long) : PlaybackEvent
     data object Error : PlaybackEvent
 }
 
@@ -26,6 +26,7 @@ interface PlayerController {
         url: String,
         mediaType: ResolvedMediaType,
         startPositionMs: Long = 0L,
+        mediaToken: Long,
     )
 
     fun play()

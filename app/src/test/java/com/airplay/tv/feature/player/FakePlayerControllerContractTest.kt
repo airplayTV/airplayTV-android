@@ -8,7 +8,7 @@ class FakePlayerControllerContractTest {
     fun recordsLastLoadedUrlAndPreciseGlobalCallOrder() {
         val fakePlayer = FakePlayerController()
 
-        fakePlayer.load("https://cdn.example/first.m3u8", ResolvedMediaType.HLS)
+        fakePlayer.load("https://cdn.example/first.m3u8", ResolvedMediaType.HLS, mediaToken = 1)
         fakePlayer.play()
         fakePlayer.seekBy(15_000L)
         fakePlayer.adjustVolume(-1)
@@ -31,8 +31,8 @@ class FakePlayerControllerContractTest {
     fun latestLoadWinsAndCallsCanBeClearedIndependently() {
         val fakePlayer = FakePlayerController()
 
-        fakePlayer.load("https://cdn.example/first.m3u8", ResolvedMediaType.HLS)
-        fakePlayer.load("https://cdn.example/latest.m3u8", ResolvedMediaType.UNKNOWN)
+        fakePlayer.load("https://cdn.example/first.m3u8", ResolvedMediaType.HLS, mediaToken = 1)
+        fakePlayer.load("https://cdn.example/latest.m3u8", ResolvedMediaType.UNKNOWN, mediaToken = 2)
         fakePlayer.clearCalls()
         fakePlayer.play()
         fakePlayer.seekBy(15_000L)

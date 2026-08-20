@@ -63,7 +63,6 @@ class SessionViewModel(
     private var episodes: List<Episode> = emptyList()
     private var currentThumb = ""
     private var pendingSync: PendingSync? = null
-    private var lastSnapshotUpdatedAtMs = Long.MIN_VALUE
     private var handledPlaybackEndGeneration: Long? = null
     private var handledPlaybackErrorGeneration: Long? = null
     private var pendingAutoAdvance: PendingAutoAdvance? = null
@@ -134,7 +133,7 @@ class SessionViewModel(
         viewModelScope.launch {
             playerController.events.collect { event ->
                 when (event) {
-                    PlaybackEvent.Ended -> handlePlaybackEnded()
+                    is PlaybackEvent.Ended -> handlePlaybackEnded(event.mediaToken)
                     PlaybackEvent.Error -> handlePlaybackError()
                 }
             }
@@ -362,6 +361,9 @@ class SessionViewModel(
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
                     }
+                    currentPlaybackIdentity
+                        ?.takeIf { playerController.state.value.isPlaying }
+                        ?.let(::startProgressJobs)
                 }
                 return@launch
             }
@@ -383,7 +385,12 @@ class SessionViewModel(
             if (generation != loadGeneration || !isForeground || pendingLoad !== load) {
                 return@launch
             }
-            playerController.load(resolved.url, resolved.mediaType, resumePositionMs)
+            playerController.load(
+                url = resolved.url,
+                mediaType = resolved.mediaType,
+                startPositionMs = resumePositionMs,
+                mediaToken = generation,
+            )
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }
                 ?.controls
@@ -485,10 +492,11 @@ class SessionViewModel(
         loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
     }
 
-    private fun handlePlaybackEnded() {
+    private fun handlePlaybackEnded(mediaToken: Long) {
         if (mutableUiState.value.page != SessionPage.Player || pendingLoad != null) return
         val command = currentLoadCommand ?: return
         val committedGeneration = currentLoadGeneration ?: return
+        if (mediaToken != committedGeneration) return
         if (handledPlaybackEndGeneration == committedGeneration) return
 
         handledPlaybackEndGeneration = committedGeneration
@@ -670,10 +678,10 @@ class SessionViewModel(
     private fun isCurrent(identity: PlaybackIdentity): Boolean =
         !cleared && pendingLoad == null && currentPlaybackIdentity == identity
 
-    private suspend fun persistSnapshot(
+    private fun persistSnapshot(
         identity: PlaybackIdentity,
         playerState: PlayerState,
-    ) = playbackProgressRepository.save(playbackRecord(identity, playerState))
+    ) = playbackProgressRepository.enqueueSave(playbackRecord(identity, playerState))
 
     private fun flushCurrentPlayback(
         naturalEnd: Boolean = false,
@@ -682,9 +690,7 @@ class SessionViewModel(
         if (pendingLoad != null) return
         val record = playbackRecord(identity, playerController.state.value, naturalEnd)
         stopProgressJobs()
-        viewModelScope.launch {
-            runCatching { playbackProgressRepository.save(record) }
-        }
+        playbackProgressRepository.enqueueSave(record)
         syncSnapshot(record, identity)
     }
 
@@ -755,17 +761,8 @@ class SessionViewModel(
                 durationMs = playerState.durationMs,
                 naturalEnd = naturalEnd,
             ),
-            updatedAtMs = nextSnapshotUpdatedAtMs(),
+            updatedAtMs = nowMs(),
         )
-    }
-
-    private fun nextSnapshotUpdatedAtMs(): Long {
-        val minimumNext = if (lastSnapshotUpdatedAtMs == Long.MAX_VALUE) {
-            Long.MAX_VALUE
-        } else {
-            lastSnapshotUpdatedAtMs + 1
-        }
-        return maxOf(nowMs(), minimumNext).also { lastSnapshotUpdatedAtMs = it }
     }
 
     private fun showQrOverlay() {

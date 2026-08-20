@@ -6,4 +6,8 @@ interface PlaybackProgressRepository {
     suspend fun latest(): PlaybackRecord?
 
     suspend fun save(record: PlaybackRecord)
+
+    fun enqueueSave(record: PlaybackRecord)
+
+    suspend fun drain()
 }
