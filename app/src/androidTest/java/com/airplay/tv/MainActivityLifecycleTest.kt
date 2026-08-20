@@ -106,8 +106,11 @@ class MainActivityLifecycleTest {
         val calls = mutableListOf<String>()
         var releaseCalls = 0
 
-        override fun load(url: String, mediaType: ResolvedMediaType) =
-            delegate.load(url, mediaType)
+        override fun load(
+            url: String,
+            mediaType: ResolvedMediaType,
+            startPositionMs: Long,
+        ) = delegate.load(url, mediaType, startPositionMs)
 
         override fun play() {
             calls += "play"
