@@ -446,11 +446,6 @@ class AppNavigationTest {
             composeRule.onNodeWithText("日志-$index").assertIsDisplayed()
         }
         assertNoOverlap(
-            "player diagnostic and info",
-            "diagnostic-overlay-container",
-            "player-info-overlay",
-        )
-        assertNoOverlap(
             "player diagnostic and progress",
             "diagnostic-overlay-container",
             "player-progress",

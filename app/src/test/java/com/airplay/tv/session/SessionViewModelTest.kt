@@ -992,6 +992,59 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun openingEpisodesHidesVisiblePlayerQr() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        socket.emit(ControlCommand.ShowQrCode)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.qrVisible)
+
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+
+        assertFalse(viewModel.uiState.value.qrVisible)
+        assertTrue(viewModel.uiState.value.episodePanelFocused)
+        assertFalse(
+            viewModel.uiState.value.qrVisible &&
+                viewModel.uiState.value.episodePanelFocused,
+        )
+    }
+
+    @Test
+    fun showingPlayerQrExitsEpisodePanelAndRestartsOverlayTimer() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        viewModel.onRemoteControl(RemoteControlAction.OpenEpisodes)
+        viewModel.onRemoteControl(RemoteControlAction.EpisodeDown)
+        assertTrue(viewModel.uiState.value.episodePanelFocused)
+        assertEquals(1, viewModel.uiState.value.focusedEpisodeIndex)
+
+        socket.emit(ControlCommand.ShowQrCode)
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.qrVisible)
+        assertFalse(viewModel.uiState.value.episodePanelFocused)
+        assertEquals(0, viewModel.uiState.value.focusedEpisodeIndex)
+        assertFalse(
+            viewModel.uiState.value.qrVisible &&
+                viewModel.uiState.value.episodePanelFocused,
+        )
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.infoVisible)
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.infoVisible)
+    }
+
+    @Test
     fun remoteControlsUseSamePlayerPathAsSocketControls() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("video", "p1"))

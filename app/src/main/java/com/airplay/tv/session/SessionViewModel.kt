@@ -692,6 +692,7 @@ class SessionViewModel(
         mutableUiState.update {
             it.copy(
                 infoVisible = true,
+                qrVisible = false,
                 episodePanelFocused = true,
                 focusedEpisodeIndex = episodes.indexOfFirst { episode ->
                     episode.id == currentLoadCommand?.pid
@@ -865,7 +866,17 @@ class SessionViewModel(
 
     private fun showQrOverlay() {
         if (mutableUiState.value.page == SessionPage.Player) {
-            mutableUiState.update { it.copy(qrVisible = true) }
+            val wasEpisodePanelFocused = mutableUiState.value.episodePanelFocused
+            mutableUiState.update {
+                it.copy(
+                    qrVisible = true,
+                    episodePanelFocused = false,
+                    focusedEpisodeIndex = 0,
+                )
+            }
+            if (wasEpisodePanelFocused) {
+                showInfoTemporarily()
+            }
         }
     }
 

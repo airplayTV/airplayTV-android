@@ -55,4 +55,9 @@ class PlayerScreenLogicTest {
         assertTrue(shouldShowPlayerDiagnostics(state))
         assertFalse(shouldShowPlayerDiagnostics(state.copy(infoVisible = false)))
     }
+
+    @Test
+    fun diagnosticLayerStaysAbovePlayerInfoGradient() {
+        assertTrue(PLAYER_DIAGNOSTIC_LAYER_Z_INDEX > PLAYER_INFO_LAYER_Z_INDEX)
+    }
 }

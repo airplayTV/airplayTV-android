@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -83,6 +84,7 @@ fun PlayerScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
+                    .zIndex(PLAYER_DIAGNOSTIC_LAYER_Z_INDEX)
                     .padding(end = 48.dp, bottom = 40.dp)
                     .testTag("diagnostic-overlay-container"),
             ) {
@@ -93,7 +95,9 @@ fun PlayerScreen(
         if (shouldShowPlaybackInfo(state)) {
             PlayerInfoOverlay(
                 state = state,
-                modifier = Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .zIndex(PLAYER_INFO_LAYER_Z_INDEX),
             )
         }
 
@@ -133,6 +137,9 @@ internal fun playerConnectionStatusTopPadding(qrVisible: Boolean) =
 
 internal fun shouldShowPlayerDiagnostics(state: SessionUiState): Boolean =
     state.infoVisible && (state.sourceName.isNotBlank() || state.diagnosticLogs.isNotEmpty())
+
+internal const val PLAYER_INFO_LAYER_Z_INDEX = 1f
+internal const val PLAYER_DIAGNOSTIC_LAYER_Z_INDEX = 2f
 
 @Composable
 private fun PlayerDiagnosticOverlay(
@@ -233,8 +240,8 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                     colors = listOf(Color.Transparent, Color(0xE6000000)),
                 ),
             )
-            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 248.dp)
-            .testTag("player-info-overlay"),
+            .testTag("player-info-overlay")
+            .padding(start = 56.dp, end = 56.dp, top = 100.dp, bottom = 248.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
             Column(
