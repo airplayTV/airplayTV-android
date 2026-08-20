@@ -110,3 +110,28 @@ GREEN：对应 focused Session/Protocol 测试全部通过。
 - 完整 `com.airplay.tv.protocol.*` 与 `com.airplay.tv.session.*` 套件通过。
 - AndroidTest Kotlin 编译通过。
 - Android TV 1080p API 28 模拟器 `AppNavigationTest`：20/20 通过，0 skipped，0 failed。
+
+## 第三轮复审修复
+
+### 异步 latest 返回后的二次快照选择
+
+- 首次 pair 且尚无 committed media 时仍启动 `PlaybackProgressRepository.latest()`。
+- 查询返回后先重新校验 association revision 与 connection generation；旧关联代次、旧连接均不得发送。
+- 校验通过后重新读取 committed identity：若等待期间已有新媒体完成 commit，使用当前 `PlayerState` 构造该媒体快照并立即走 `syncSnapshot`；仅当仍无 committed media 时才发送查询得到的 latest。
+- latest 返回 `null` 时也执行相同的 committed media 重选，避免遗漏等待期间刚提交的当前播放记录。
+
+### 第三轮 TDD
+
+RED：
+
+- 不可协作取消的 latest 返回 stale record 期间提交新媒体，旧实现丢弃查询结果但未发送当前媒体，断言因 0 条消息失败。
+- 不可协作取消的 latest 返回 `null` 期间提交新媒体，旧实现提前返回，断言同样因 0 条消息失败。
+
+GREEN：
+
+- 两种竞态最终均恰好发送 1 条当前 committed media 记录，包含当前 source、vid、pid 与 `PlayerState.positionMs`，不发送 stale record。
+- `unpair -> re-pair` 后两代 latest 均阻塞、随后 commit 新媒体的场景中，新 association 恰好发送当前媒体，旧 association 查询被 revision 隔离且不跨代次发送。
+- focused 竞态测试及完整 `com.airplay.tv.session.*`、`com.airplay.tv.protocol.*` 套件通过。
+- clean JDK 17/PATH 下执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks --no-parallel --max-workers=1`：`BUILD SUCCESSFUL in 47s`，33/33 tasks 重新执行。
+- Debug JVM：25 suites，229 tests，0 failure，0 error；AndroidTest Kotlin 编译通过。
+- 本轮未修改 UI，未重复运行 AVD；设备 UI 证据沿用第二轮 `AppNavigationTest` 20/20 结果。

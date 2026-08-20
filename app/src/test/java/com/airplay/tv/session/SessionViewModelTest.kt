@@ -165,6 +165,8 @@ class SessionViewModelTest {
     fun staleLatestLookupCannotSendAfterUnpairAndNewPairEdge() = runTest(dispatcher) {
         val firstLookupStarted = CompletableDeferred<Unit>()
         val releaseFirstLookup = CompletableDeferred<Unit>()
+        val secondLookupStarted = CompletableDeferred<Unit>()
+        val releaseSecondLookup = CompletableDeferred<Unit>()
         var lookupCount = 0
         repository.latestResponse = {
             lookupCount += 1
@@ -173,6 +175,8 @@ class SessionViewModelTest {
                 withContext(NonCancellable) { releaseFirstLookup.await() }
                 record("source-a", "stale-series", "p1", positionMs = 10_000)
             } else {
+                secondLookupStarted.complete(Unit)
+                withContext(NonCancellable) { releaseSecondLookup.await() }
                 record("source-b", "fresh-series", "p2", positionMs = 20_000)
             }
         }
@@ -184,12 +188,25 @@ class SessionViewModelTest {
         socket.emit(ControlCommand.ControllerUnpaired)
         socket.emit(ControlCommand.ControllerPaired)
         runCurrent()
+        secondLookupStarted.await()
+        socket.emit(load("current-series", "p3", source = "source-current"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = false, positionMs = 33_000, durationMs = 100_000),
+        )
+        runCurrent()
+        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+
+        releaseSecondLookup.complete(Unit)
+        runCurrent()
         releaseFirstLookup.complete(Unit)
         runCurrent()
 
         val sent = socket.playbackHistorySendAttempts.single().record
-        assertEquals("fresh-series", sent.vid)
-        assertEquals("p2", sent.pid)
+        assertEquals("source-current", sent.source)
+        assertEquals("current-series", sent.vid)
+        assertEquals("p3", sent.pid)
+        assertEquals(33_000, sent.positionMs)
     }
 
     @Test
@@ -226,12 +243,12 @@ class SessionViewModelTest {
         }
 
     @Test
-    fun latestLookupCannotSendStaleRecordAfterMediaCommits() = runTest(dispatcher) {
+    fun latestLookupReselectsCommittedMediaAfterItCommits() = runTest(dispatcher) {
         val latestStarted = CompletableDeferred<Unit>()
         val releaseLatest = CompletableDeferred<Unit>()
         repository.latestResponse = {
             latestStarted.complete(Unit)
-            releaseLatest.await()
+            withContext(NonCancellable) { releaseLatest.await() }
             record("source-old", "stale-series", "p9", positionMs = 9_000)
         }
         startCollectors()
@@ -241,11 +258,49 @@ class SessionViewModelTest {
         latestStarted.await()
         socket.emit(load("series", "p1", source = "source-a"))
         advanceUntilIdle()
-        socket.playbackHistorySendAttempts.clear()
+        playerController.setState(
+            PlayerState(isPlaying = false, positionMs = 44_000, durationMs = 100_000),
+        )
+        runCurrent()
+        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
         releaseLatest.complete(Unit)
         runCurrent()
 
-        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+        val sent = socket.playbackHistorySendAttempts.single().record
+        assertEquals("source-a", sent.source)
+        assertEquals("series", sent.vid)
+        assertEquals("p1", sent.pid)
+        assertEquals(44_000, sent.positionMs)
+    }
+
+    @Test
+    fun nullLatestLookupStillReselectsMediaCommittedWhileWaiting() = runTest(dispatcher) {
+        val latestStarted = CompletableDeferred<Unit>()
+        val releaseLatest = CompletableDeferred<Unit>()
+        repository.latestResponse = {
+            latestStarted.complete(Unit)
+            withContext(NonCancellable) { releaseLatest.await() }
+            null
+        }
+        startCollectors()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        latestStarted.await()
+        socket.emit(load("series", "p2", source = "source-b"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = false, positionMs = 55_000, durationMs = 100_000),
+        )
+        runCurrent()
+        releaseLatest.complete(Unit)
+        runCurrent()
+
+        val sent = socket.playbackHistorySendAttempts.single().record
+        assertEquals("source-b", sent.source)
+        assertEquals("series", sent.vid)
+        assertEquals("p2", sent.pid)
+        assertEquals(55_000, sent.positionMs)
     }
 
     @Test

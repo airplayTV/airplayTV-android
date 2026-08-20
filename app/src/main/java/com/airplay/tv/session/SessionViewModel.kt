@@ -947,16 +947,26 @@ class SessionViewModel(
         }
 
         associationSnapshotJob = viewModelScope.launch {
-            val record = playbackProgressRepository.latest() ?: return@launch
+            val latestRecord = playbackProgressRepository.latest()
             if (
                 cleared ||
                 !controllerAssociationLogged ||
                 associationRevision != controllerAssociationRevision ||
-                connectionGeneration != socketClient.connectionGeneration.value ||
-                currentPlaybackIdentity != null
+                connectionGeneration != socketClient.connectionGeneration.value
             ) {
                 return@launch
             }
+            val committedIdentity = currentPlaybackIdentity
+            if (committedIdentity != null) {
+                val committedRecord = playbackRecord(
+                    committedIdentity,
+                    playerController.state.value,
+                ) ?: return@launch
+                playbackProgressRepository.enqueueSave(committedRecord)
+                syncSnapshot(committedRecord, committedIdentity)
+                return@launch
+            }
+            val record = latestRecord ?: return@launch
             socketClient.sendPlaybackHistory(
                 PlaybackHistoryMessage(
                     requestId = requestIdFactory(),
