@@ -47,10 +47,30 @@ class SocketMessageParserTest {
     @Test
     fun parsesPairCommandOnlyForCurrentRoom() {
         assertEquals(
-            ControlCommand.ControllerPaired,
+            ControlCommand.ControllerPaired(historySyncId = null),
             parser.parse("""{"event":"/ctl_pair","group":"room-1"}""", "room-1"),
         )
+        assertEquals(
+            ControlCommand.ControllerPaired(historySyncId = "phone-a"),
+            parser.parse(
+                """{"event":"/ctl_pair","group":"room-1","history_sync_id":"phone-a"}""",
+                "room-1",
+            ),
+        )
+        assertEquals(
+            ControlCommand.ControllerPaired(historySyncId = null),
+            parser.parse(
+                """{"event":"/ctl_pair","group":"room-1","history_sync_id":""}""",
+                "room-1",
+            ),
+        )
         assertNull(parser.parse("""{"event":"/ctl_pair","group":"other"}""", "room-1"))
+        assertNull(
+            parser.parse(
+                """{"event":"/ctl_pair","group":"room-1","history_sync_id":7}""",
+                "room-1",
+            ),
+        )
     }
 
     @Test

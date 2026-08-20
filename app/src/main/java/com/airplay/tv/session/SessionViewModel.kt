@@ -75,6 +75,8 @@ class SessionViewModel(
     private var pendingForegroundPlayIntent: Boolean? = null
     private var controllerAssociationLogged = false
     private var controllerAssociationRevision = 0L
+    private var historySyncGeneration: Long? = null
+    private val processedHistorySyncIds = mutableSetOf<String>()
     private var overlayRevision = 0L
     private var diagnosticRevision = 0L
     private var keepScreenOnRevision = 0L
@@ -102,7 +104,7 @@ class SessionViewModel(
                     connection == SocketConnectionState.Reconnecting ||
                     connection == SocketConnectionState.Closed
                 ) {
-                    invalidateControllerAssociation()
+                    invalidateControllerAssociation(clearHistorySyncIds = true)
                     failPendingSync()
                 }
                 if (connection != previousConnection) {
@@ -111,9 +113,10 @@ class SessionViewModel(
             }
         }
         viewModelScope.launch {
-            socketClient.connectionGeneration.collect {
-                invalidateControllerAssociation()
-                mutableUiState.update { it.copy(controllerConnected = false) }
+            socketClient.connectionGeneration.collect { generation ->
+                if (adoptConnectionGeneration(generation)) {
+                    mutableUiState.update { it.copy(controllerConnected = false) }
+                }
             }
         }
         viewModelScope.launch {
@@ -169,17 +172,19 @@ class SessionViewModel(
                 if (received.generation != socketClient.connectionGeneration.value) {
                     return@collect
                 }
+                adoptConnectionGeneration(received.generation)
                 val command = received.command
                 val firstAssociation =
-                    command == ControlCommand.ControllerPaired && !controllerAssociationLogged
-                val associationRevision = if (firstAssociation) {
-                    beginControllerAssociation()
-                } else {
-                    null
+                    command is ControlCommand.ControllerPaired && !controllerAssociationLogged
+                if (firstAssociation) {
+                    controllerAssociationLogged = true
                 }
+                val associationRevision = (command as? ControlCommand.ControllerPaired)
+                    ?.historySyncId
+                    ?.let { claimHistorySyncRequest(it, received.generation) }
                 val shouldAppendDiagnostic = when (command) {
                     ControlCommand.HistoryIgnored -> false
-                    ControlCommand.ControllerPaired -> firstAssociation
+                    is ControlCommand.ControllerPaired -> firstAssociation
                     else -> true
                 }
                 if (shouldAppendDiagnostic) {
@@ -302,7 +307,7 @@ class SessionViewModel(
             ControlCommand.ShowQrCode -> showQrOverlay()
             ControlCommand.Previous -> loadAdjacentEpisode(-1)
             ControlCommand.Next -> loadAdjacentEpisode(1)
-            ControlCommand.ControllerPaired -> Unit
+            is ControlCommand.ControllerPaired -> Unit
             ControlCommand.ControllerUnpaired -> {
                 invalidateControllerAssociation()
                 mutableUiState.update { it.copy(controllerConnected = false) }
@@ -919,19 +924,37 @@ class SessionViewModel(
         }
     }
 
-    private fun beginControllerAssociation(): Long {
-        controllerAssociationLogged = true
+    private fun claimHistorySyncRequest(historySyncId: String, generation: Long): Long? {
+        adoptConnectionGeneration(generation)
+        if (
+            historySyncId in processedHistorySyncIds ||
+            processedHistorySyncIds.size >= MAX_HISTORY_SYNC_IDS_PER_GENERATION
+        ) {
+            return null
+        }
+        processedHistorySyncIds.add(historySyncId)
         controllerAssociationRevision += 1
         associationSnapshotJob?.cancel()
         associationSnapshotJob = null
         return controllerAssociationRevision
     }
 
-    private fun invalidateControllerAssociation() {
+    private fun adoptConnectionGeneration(generation: Long): Boolean {
+        if (historySyncGeneration == generation) return false
+        invalidateControllerAssociation(clearHistorySyncIds = true)
+        historySyncGeneration = generation
+        return true
+    }
+
+    private fun invalidateControllerAssociation(clearHistorySyncIds: Boolean = false) {
         controllerAssociationLogged = false
         controllerAssociationRevision += 1
         associationSnapshotJob?.cancel()
         associationSnapshotJob = null
+        if (clearHistorySyncIds) {
+            historySyncGeneration = null
+            processedHistorySyncIds.clear()
+        }
     }
 
     private fun pushLatestPlaybackOnAssociation(
@@ -1167,6 +1190,7 @@ class SessionViewModel(
         const val LOCAL_PROGRESS_INTERVAL_MS = 5_000L
         const val REMOTE_PROGRESS_INTERVAL_MS = 30_000L
         const val SYNC_ACK_TIMEOUT_MS = 5_000L
+        const val MAX_HISTORY_SYNC_IDS_PER_GENERATION = 64
         const val KEEP_SCREEN_ON_GRACE_PERIOD_MS = 10 * 60 * 1_000L
         const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"

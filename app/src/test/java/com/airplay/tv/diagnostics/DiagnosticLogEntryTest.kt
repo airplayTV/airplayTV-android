@@ -60,7 +60,7 @@ class DiagnosticLogEntryTest {
 
     @Test
     fun controllerPairedLogUsesFixedSafeText() {
-        val log = ControlCommand.ControllerPaired.toDiagnosticLog()
+        val log = ControlCommand.ControllerPaired().toDiagnosticLog()
 
         assertEquals("CTL", log.stage)
         assertEquals("手机控制器已关联", log.message)

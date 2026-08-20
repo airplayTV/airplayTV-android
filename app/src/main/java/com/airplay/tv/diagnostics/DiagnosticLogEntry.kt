@@ -53,7 +53,7 @@ fun ControlCommand.toDiagnosticLog(
         ControlCommand.ShowQrCode -> "显示二维码"
         ControlCommand.Previous -> "上一集"
         ControlCommand.Next -> "下一集"
-        ControlCommand.ControllerPaired -> "手机控制器已关联"
+        is ControlCommand.ControllerPaired -> "手机控制器已关联"
         ControlCommand.ControllerUnpaired -> "手机控制器已断开"
         ControlCommand.HistoryIgnored -> "收到历史指令"
     },

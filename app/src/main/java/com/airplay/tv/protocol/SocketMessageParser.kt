@@ -27,6 +27,7 @@ class SocketMessageParser {
         source = root.optionalString("source"),
         mode = root.optionalMode(),
         value = root.optionalInt("value"),
+        historySyncId = root.optionalString("history_sync_id"),
     )
 
     private fun SocketEnvelope.toCommand(roomId: String): ControlCommand? {
@@ -49,7 +50,9 @@ class SocketMessageParser {
             "/ctl_history" -> ControlCommand.HistoryIgnored
             "/ctl_prev" -> ControlCommand.Previous
             "/ctl_next" -> ControlCommand.Next
-            "/ctl_pair" -> ControlCommand.ControllerPaired
+            "/ctl_pair" -> ControlCommand.ControllerPaired(
+                historySyncId = historySyncId?.takeIf { it.isNotEmpty() && it.length <= MAX_FIELD_LENGTH },
+            )
             "/ctl_unpair" -> ControlCommand.ControllerUnpaired
             else -> null
         }

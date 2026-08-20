@@ -124,8 +124,8 @@ class SessionViewModelTest {
         )
         runCurrent()
 
-        socket.emit(ControlCommand.ControllerPaired)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
 
         val sent = socket.playbackHistorySendAttempts.single().record
@@ -151,14 +151,174 @@ class SessionViewModelTest {
             )
             startCollectors()
 
-            socket.emit(ControlCommand.ControllerPaired)
-            socket.emit(ControlCommand.ControllerPaired)
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = null))
             runCurrent()
 
             val sent = socket.playbackHistorySendAttempts.single().record
             assertEquals("previous-series", sent.vid)
             assertEquals("p7", sent.pid)
             assertEquals(73_000, sent.positionMs)
+        }
+
+    @Test
+    fun legacyPairAndHeartbeatsConnectWithoutImmediateHistorySync() = runTest(dispatcher) {
+        repository.seed(record("source-a", "previous-series", "p7", positionMs = 73_000))
+        startCollectors()
+
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = null))
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = null))
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.controllerConnected)
+        assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+        assertEquals(0, repository.latestCallCount)
+    }
+
+    @Test
+    fun eachNewControllerIDPushesOnceWhileHeartbeatsAndDuplicatesDoNot() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = false, positionMs = 42_000, durationMs = 100_000),
+            )
+            runCurrent()
+            socket.playbackHistorySendAttempts.clear()
+
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = null))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-b"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-b"))
+            runCurrent()
+
+            assertTrue(viewModel.uiState.value.controllerConnected)
+            assertEquals(2, socket.playbackHistorySendAttempts.size)
+            assertEquals(
+                listOf("p1", "p1"),
+                socket.playbackHistorySendAttempts.map { it.record.pid },
+            )
+            assertEquals(
+                listOf(42_000L, 42_000L),
+                socket.playbackHistorySendAttempts.map { it.record.positionMs },
+            )
+        }
+
+    @Test
+    fun newerControllerIDCancelsOlderLookupAndReselectsCommittedMedia() =
+        runTest(dispatcher) {
+            val firstLookupStarted = CompletableDeferred<Unit>()
+            val releaseFirstLookup = CompletableDeferred<Unit>()
+            val secondLookupStarted = CompletableDeferred<Unit>()
+            val releaseSecondLookup = CompletableDeferred<Unit>()
+            var lookupCount = 0
+            repository.latestResponse = {
+                lookupCount += 1
+                if (lookupCount == 1) {
+                    firstLookupStarted.complete(Unit)
+                    withContext(NonCancellable) { releaseFirstLookup.await() }
+                    record("source-old", "stale-a", "p8", positionMs = 8_000)
+                } else {
+                    secondLookupStarted.complete(Unit)
+                    withContext(NonCancellable) { releaseSecondLookup.await() }
+                    record("source-old", "stale-b", "p9", positionMs = 9_000)
+                }
+            }
+            startCollectors()
+
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+            runCurrent()
+            firstLookupStarted.await()
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-b"))
+            runCurrent()
+            secondLookupStarted.await()
+            socket.emit(load("current-series", "p3", source = "source-current"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = false, positionMs = 33_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            releaseSecondLookup.complete(Unit)
+            runCurrent()
+            releaseFirstLookup.complete(Unit)
+            runCurrent()
+
+            val sent = socket.playbackHistorySendAttempts.single().record
+            assertEquals("source-current", sent.source)
+            assertEquals("current-series", sent.vid)
+            assertEquals("p3", sent.pid)
+            assertEquals(33_000, sent.positionMs)
+        }
+
+    @Test
+    fun disconnectAndNewGenerationAllowSameControllerIDToSyncAgain() =
+        runTest(dispatcher) {
+            repository.seed(record("source-a", "previous-series", "p7", positionMs = 73_000))
+            socket.mutableConnectionGeneration.value = 1L
+            startCollectors()
+
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"), generation = 1L)
+            runCurrent()
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"), generation = 1L)
+            runCurrent()
+            socket.mutableStates.value = SocketConnectionState.Reconnecting
+            runCurrent()
+            socket.mutableStates.value = SocketConnectionState.Connected
+            runCurrent()
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"), generation = 1L)
+            runCurrent()
+            socket.mutableConnectionGeneration.value = 2L
+            runCurrent()
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"), generation = 2L)
+            runCurrent()
+
+            assertEquals(3, socket.playbackHistorySendAttempts.size)
+            assertEquals(3, repository.latestCallCount)
+        }
+
+    @Test
+    fun currentGenerationCommandProcessedBeforeGenerationCollectorStillSyncs() =
+        runTest(dispatcher) {
+            repository.seed(record("source-a", "previous-series", "p7", positionMs = 73_000))
+            socket.mutableConnectionGeneration.value = 1L
+            startCollectors()
+
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-b"), generation = 2L)
+            socket.mutableConnectionGeneration.value = 2L
+            runCurrent()
+
+            val sent = socket.playbackHistorySendAttempts.single().record
+            assertEquals("previous-series", sent.vid)
+            assertEquals("p7", sent.pid)
+        }
+
+    @Test
+    fun uniqueControllerIDsAreBoundedWithinOneConnectionGeneration() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = false, positionMs = 42_000, durationMs = 100_000),
+            )
+            runCurrent()
+            socket.playbackHistorySendAttempts.clear()
+
+            repeat(64) { index ->
+                socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-$index"))
+            }
+            socket.emit(ControlCommand.ControllerUnpaired)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.controllerConnected)
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-64"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-0"))
+            runCurrent()
+
+            assertTrue(viewModel.uiState.value.controllerConnected)
+            assertEquals(64, socket.playbackHistorySendAttempts.size)
         }
 
     @Test
@@ -182,11 +342,11 @@ class SessionViewModelTest {
         }
         startCollectors()
 
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
         firstLookupStarted.await()
         socket.emit(ControlCommand.ControllerUnpaired)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-b"))
         runCurrent()
         secondLookupStarted.await()
         socket.emit(load("current-series", "p3", source = "source-current"))
@@ -232,7 +392,7 @@ class SessionViewModelTest {
             socket.emit(load("series", "p2", source = "source-a"))
             runCurrent()
             socket.playbackHistorySendAttempts.clear()
-            socket.emit(ControlCommand.ControllerPaired)
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
             runCurrent()
 
             val sent = socket.playbackHistorySendAttempts.single().record
@@ -253,7 +413,7 @@ class SessionViewModelTest {
         }
         startCollectors()
 
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
         latestStarted.await()
         socket.emit(load("series", "p1", source = "source-a"))
@@ -284,7 +444,7 @@ class SessionViewModelTest {
         }
         startCollectors()
 
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
         latestStarted.await()
         socket.emit(load("series", "p2", source = "source-b"))
@@ -314,7 +474,7 @@ class SessionViewModelTest {
         )
         runCurrent()
 
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
         val associationPush = socket.playbackHistorySendAttempts.single()
         socket.emitPlaybackHistoryAck(
@@ -437,8 +597,8 @@ class SessionViewModelTest {
             assertEquals(PlaybackSyncStatus.Synced, viewModel.uiState.value.syncStatus)
 
             val historyCount = socket.playbackHistorySendAttempts.size
-            socket.emit(ControlCommand.ControllerPaired)
-            socket.emit(ControlCommand.ControllerPaired)
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
             runCurrent()
             assertEquals(historyCount + 1, socket.playbackHistorySendAttempts.size)
         }
@@ -2325,7 +2485,7 @@ class SessionViewModelTest {
         runCurrent()
         assertFalse(viewModel.uiState.value.controllerConnected)
 
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-a"))
         runCurrent()
         assertTrue(viewModel.uiState.value.controllerConnected)
         assertTrue(playerController.calls.isEmpty())
@@ -2352,8 +2512,8 @@ class SessionViewModelTest {
     fun repeatedPairHeartbeatsAreIdempotentAndDoNotControlPlayback() = runTest(dispatcher) {
         startCollectors()
 
-        socket.emit(ControlCommand.ControllerPaired)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
+        socket.emit(ControlCommand.ControllerPaired())
         runCurrent()
 
         assertTrue(viewModel.uiState.value.controllerConnected)
@@ -2364,7 +2524,7 @@ class SessionViewModelTest {
         )
 
         socket.emit(ControlCommand.ControllerUnpaired)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
         runCurrent()
 
         assertEquals(
@@ -2379,8 +2539,8 @@ class SessionViewModelTest {
         startCollectors()
 
         socket.emit(ControlCommand.Play)
-        socket.emit(ControlCommand.ControllerPaired)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
+        socket.emit(ControlCommand.ControllerPaired())
         runCurrent()
 
         assertEquals(
@@ -2392,10 +2552,10 @@ class SessionViewModelTest {
     @Test
     fun unpairThenPlaybackCommandStillAllowsNewAssociationLogEdge() = runTest(dispatcher) {
         startCollectors()
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
         socket.emit(ControlCommand.ControllerUnpaired)
         socket.emit(ControlCommand.Play)
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
         runCurrent()
 
         assertEquals(
@@ -2413,7 +2573,7 @@ class SessionViewModelTest {
             PlayerState(isPlaying = true, positionMs = 12_000, durationMs = 30_000),
         )
         runCurrent()
-        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired())
         runCurrent()
         playerController.clearCalls()
         val before = viewModel.uiState.value
@@ -2443,7 +2603,7 @@ class SessionViewModelTest {
         startCollectors()
         socket.mutableStates.value = SocketConnectionState.Connected
         runCurrent()
-        socket.emit(ControlCommand.ControllerPaired, generation = 1L)
+        socket.emit(ControlCommand.ControllerPaired(), generation = 1L)
         runCurrent()
         assertTrue(viewModel.uiState.value.controllerConnected)
 
@@ -2459,7 +2619,7 @@ class SessionViewModelTest {
         assertFalse(viewModel.uiState.value.controllerConnected)
         assertTrue(playerController.calls.isEmpty())
 
-        socket.emit(ControlCommand.ControllerPaired, generation = 2L)
+        socket.emit(ControlCommand.ControllerPaired(), generation = 2L)
         runCurrent()
         assertTrue(viewModel.uiState.value.controllerConnected)
         assertEquals(

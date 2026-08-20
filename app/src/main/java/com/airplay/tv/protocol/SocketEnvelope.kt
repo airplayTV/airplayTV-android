@@ -8,4 +8,5 @@ internal data class SocketEnvelope(
     val source: String?,
     val mode: String?,
     val value: Int?,
+    val historySyncId: String?,
 )

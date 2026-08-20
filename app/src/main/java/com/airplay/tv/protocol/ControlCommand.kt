@@ -21,7 +21,7 @@ sealed interface ControlCommand {
     data object ShowQrCode : ControlCommand
     data object Previous : ControlCommand
     data object Next : ControlCommand
-    data object ControllerPaired : ControlCommand
+    data class ControllerPaired(val historySyncId: String? = null) : ControlCommand
     data object ControllerUnpaired : ControlCommand
     data object HistoryIgnored : ControlCommand
 }

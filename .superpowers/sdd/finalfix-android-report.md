@@ -135,3 +135,33 @@ GREEN：
 - clean JDK 17/PATH 下执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks --no-parallel --max-workers=1`：`BUILD SUCCESSFUL in 47s`，33/33 tasks 重新执行。
 - Debug JVM：25 suites，229 tests，0 failure，0 error；AndroidTest Kotlin 编译通过。
 - 本轮未修改 UI，未重复运行 AVD；设备 UI 证据沿用第二轮 `AppNavigationTest` 20/20 结果。
+
+## 第四轮多手机 Presence 修复
+
+### 协议与同步边沿
+
+- `/ctl_pair` 解析可选顶层 `history_sync_id`；缺失或空字符串继续作为兼容 heartbeat，仅更新 paired 连接状态，不触发即时历史同步；非字符串字段拒绝解析。
+- 每个 TV WebSocket connection generation 维护已处理 controller ID 集合。A 首次 ID 触发一次，A heartbeat/重复 ID 不触发；A 在线时 B 首次 ID 再触发一次，B 重复不触发。
+- 断线或新 connection generation 清理 ID 集合；API 仅在 Presence registry 房间已空时发送 `/ctl_unpair`，因此 Android 收到 unpair 后清除 paired 状态不会把仍在线的其他手机误判为离线。
+- 新 controller ID 复用 association revision，取消旧异步 latest；查询完成后仍按 revision、connection generation 校验并重选当前 committed media。
+- generation collector 与 command collector 共用幂等 `adoptConnectionGeneration`，解决当前 generation 命令先处理、generation collector 后处理时误清集合和取消快照的跨 Flow 竞态。
+- 每 generation 最多保留 64 个唯一 controller ID；已记录 ID 不淘汰且永不重复触发，第 65 个及以后新 ID 仍维持 paired 状态但不启动即时同步，限制长期连接下的内存与同步工作量。
+
+### 第四轮 TDD
+
+RED：
+
+- 新 parser/session 测试首先因 `ControllerPaired` 不支持 `historySyncId` 而编译失败。
+- 旧实现对 legacy pair 仍无条件即时同步，无法区分 A heartbeat、A 重复与 B 首次 Presence。
+- 当前 generation 命令先于 generation collector 处理时，后到 collector 取消快照，断言因 0 条消息失败。
+- 65 个唯一 ID 均触发同步，容量测试实际 65 条、期望 64 条失败。
+
+GREEN：
+
+- parser 覆盖新 ID、缺失、空值、错误类型和房间隔离。
+- Session 覆盖 legacy heartbeat、A/B 首次与重复、A/B 异步 latest 竞态、断线/跨 generation 同 ID 重触发、跨 Flow generation 竞态和 64 ID 容量边界。
+- 容量满后执行 unpair，再收到第 65 个新 ID 时 `controllerConnected` 恢复为 true，历史发送数仍保持 64。
+- 两轮只读复审最终为 0 Critical、0 Important；最初发现的跨 Flow 竞态和无界集合均已通过补充 RED/GREEN 关闭。
+- clean JDK 17/PATH 下执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks --no-parallel --max-workers=1`：`BUILD SUCCESSFUL in 57s`，33/33 tasks 重新执行。
+- Debug JVM：25 suites，235 tests，0 failure，0 error，0 skipped；AndroidTest Kotlin 编译通过。
+- 本轮无 UI 改动，按范围不重复运行 AVD；设备 UI 证据仍沿用第二轮 `AppNavigationTest` 20/20。
