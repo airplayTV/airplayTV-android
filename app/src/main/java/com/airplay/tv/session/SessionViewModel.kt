@@ -6,13 +6,18 @@ import androidx.media3.common.Player
 import com.airplay.tv.diagnostics.DiagnosticLogEntry
 import com.airplay.tv.diagnostics.appendDiagnostic
 import com.airplay.tv.diagnostics.toDiagnosticLog
+import com.airplay.tv.feature.history.PlaybackProgressRepository
+import com.airplay.tv.feature.history.PlaybackRecord
+import com.airplay.tv.feature.history.isPlaybackCompleted
 import com.airplay.tv.feature.player.Episode
 import com.airplay.tv.feature.player.PlaybackEvent
 import com.airplay.tv.feature.player.PlayerController
+import com.airplay.tv.feature.player.PlayerState
 import com.airplay.tv.feature.player.RemoteControlAction
 import com.airplay.tv.feature.player.VideoDetails
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.protocol.ControlCommand
+import com.airplay.tv.protocol.PlaybackHistoryMessage
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
 import kotlinx.coroutines.CancellationException
@@ -24,12 +29,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class SessionViewModel(
     roomId: String,
     private val socketClient: SocketClient,
     private val videoResolver: VideoResolver,
     private val playerController: PlayerController,
+    private val playbackProgressRepository: PlaybackProgressRepository,
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val requestIdFactory: () -> String = { UUID.randomUUID().toString() },
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SessionUiState(roomId = roomId))
 
@@ -42,12 +51,19 @@ class SessionViewModel(
     private var detailJob: Job? = null
     private var overlayJob: Job? = null
     private var diagnosticOverlayJob: Job? = null
+    private var localProgressJob: Job? = null
+    private var remoteProgressJob: Job? = null
+    private var syncTimeoutJob: Job? = null
     private var pendingLoad: PendingLoad? = null
     private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
     private var currentLoadGeneration: Long? = null
+    private var currentPlaybackIdentity: PlaybackIdentity? = null
     private var acceptedLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
+    private var currentThumb = ""
+    private var pendingSync: PendingSync? = null
+    private var lastSnapshotUpdatedAtMs = Long.MIN_VALUE
     private var handledPlaybackEndGeneration: Long? = null
     private var handledPlaybackErrorGeneration: Long? = null
     private var pendingAutoAdvance: PendingAutoAdvance? = null
@@ -83,6 +99,7 @@ class SessionViewModel(
                     connection == SocketConnectionState.Closed
                 ) {
                     controllerAssociationLogged = false
+                    failPendingSync()
                 }
                 if (connection != previousConnection) {
                     appendDiagnostic(connection.toDiagnosticLog())
@@ -97,6 +114,7 @@ class SessionViewModel(
         }
         viewModelScope.launch {
             playerController.state.collect { playerState ->
+                val wasPlaying = mutableUiState.value.isPlaying
                 mutableUiState.update {
                     it.copy(
                         isPlaying = playerState.isPlaying,
@@ -105,6 +123,12 @@ class SessionViewModel(
                         error = resolutionError ?: playerState.error,
                     )
                 }
+                when {
+                    playerState.isPlaying && !wasPlaying -> {
+                        currentPlaybackIdentity?.let(::startProgressJobs)
+                    }
+                    !playerState.isPlaying && wasPlaying -> stopProgressJobs()
+                }
             }
         }
         viewModelScope.launch {
@@ -112,6 +136,26 @@ class SessionViewModel(
                 when (event) {
                     PlaybackEvent.Ended -> handlePlaybackEnded()
                     PlaybackEvent.Error -> handlePlaybackError()
+                }
+            }
+        }
+        viewModelScope.launch {
+            socketClient.playbackHistoryAcks.collect { ack ->
+                val pending = pendingSync?.takeIf { it.requestId == ack.requestId }
+                    ?: return@collect
+                pendingSync = null
+                syncTimeoutJob?.cancel()
+                syncTimeoutJob = null
+                if (isCurrent(pending.identity)) {
+                    mutableUiState.update {
+                        it.copy(
+                            syncStatus = if (ack.accepted) {
+                                PlaybackSyncStatus.Synced
+                            } else {
+                                PlaybackSyncStatus.Failed
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -152,6 +196,8 @@ class SessionViewModel(
         if (cleared || this.isForeground == isForeground) return
         this.isForeground = isForeground
         if (!isForeground) {
+            flushCurrentPlayback()
+            stopProgressJobs()
             pendingForegroundPlayIntent = if (pendingLoad != null) {
                 pendingMediaControls?.latestPlaybackIntent() ?: pendingForegroundPlayIntent
             } else {
@@ -185,7 +231,12 @@ class SessionViewModel(
     override fun onCleared() {
         if (cleared) return
         cleared = true
+        flushCurrentPlayback()
         invalidateLoads()
+        stopProgressJobs()
+        syncTimeoutJob?.cancel()
+        syncTimeoutJob = null
+        pendingSync = null
         overlayJob?.cancel()
         diagnosticRevision += 1
         diagnosticOverlayJob?.cancel()
@@ -236,15 +287,21 @@ class SessionViewModel(
         command: ControlCommand.LoadVideo,
         preserveEpisodes: Boolean = false,
         automatic: Boolean = false,
+        flushPrevious: Boolean = true,
     ) {
         if (!automatic) pendingAutoAdvance = null
+        if (flushPrevious) flushCurrentPlayback()
+        stopProgressJobs()
         loadGeneration += 1
         resolveJob?.cancel()
         detailJob?.cancel()
         pendingDetailsCommand = null
         pendingMediaControls = null
         pendingForegroundPlayIntent = null
-        if (!preserveEpisodes) episodes = emptyList()
+        if (!preserveEpisodes) {
+            episodes = emptyList()
+            currentThumb = ""
+        }
         acceptedLoadCommand = command
         pendingLoad = PendingLoad(
             command = command,
@@ -264,6 +321,10 @@ class SessionViewModel(
                     ""
                 },
                 playbackUrl = if (preserveEpisodes) it.playbackUrl else "",
+                sourceName = command.source,
+                episodes = episodes,
+                currentPid = command.pid,
+                syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
                 error = null,
             )
@@ -310,7 +371,19 @@ class SessionViewModel(
             }
 
             appendDiagnostic(DiagnosticLogEntry("API", SOURCE_RESOLVED_MESSAGE))
-            playerController.load(resolved.url, resolved.mediaType)
+            val resumePositionMs = try {
+                playbackProgressRepository.find(command.source, command.vid, command.pid)
+                    ?.resumePositionMs()
+                    ?: 0L
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (_: Exception) {
+                0L
+            }
+            if (generation != loadGeneration || !isForeground || pendingLoad !== load) {
+                return@launch
+            }
+            playerController.load(resolved.url, resolved.mediaType, resumePositionMs)
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }
                 ?.controls
@@ -321,6 +394,7 @@ class SessionViewModel(
             pendingLoad = null
             currentLoadCommand = command
             currentLoadGeneration = generation
+            currentPlaybackIdentity = PlaybackIdentity(generation, command)
             acceptedLoadCommand = command
             resolutionError = null
             mutableUiState.update {
@@ -335,8 +409,13 @@ class SessionViewModel(
                         }
                         .ifEmpty { it.episodeName },
                     playbackUrl = resolved.url,
+                    sourceName = command.source,
+                    currentPid = command.pid,
                     error = playerController.state.value.error,
                 )
+            }
+            if (playerController.state.value.isPlaying) {
+                startProgressJobs(checkNotNull(currentPlaybackIdentity))
             }
             if (load.overlayRevisionAtAcceptance == overlayRevision) {
                 showInfoTemporarily()
@@ -369,6 +448,7 @@ class SessionViewModel(
 
             pendingDetailsCommand = null
             episodes = details.episodes
+            currentThumb = details.thumb
             if (details.title.isNotEmpty() || details.episodes.isNotEmpty()) {
                 appendDiagnostic(DiagnosticLogEntry("API", DETAILS_LOADED_MESSAGE))
             }
@@ -380,6 +460,7 @@ class SessionViewModel(
                         ?.name
                         .orEmpty()
                         .ifEmpty { it.episodeName },
+                    episodes = details.episodes,
                 )
             }
             val pendingAdvance = pendingAutoAdvance
@@ -411,6 +492,7 @@ class SessionViewModel(
         if (handledPlaybackEndGeneration == committedGeneration) return
 
         handledPlaybackEndGeneration = committedGeneration
+        flushCurrentPlayback(naturalEnd = true)
         appendDiagnostic(DiagnosticLogEntry("PLAY", PLAYBACK_ENDED_MESSAGE))
         if (pendingDetailsCommand == command) {
             pendingAutoAdvance = PendingAutoAdvance(command, committedGeneration)
@@ -456,6 +538,7 @@ class SessionViewModel(
             command = command.copy(pid = nextEpisode.id),
             preserveEpisodes = true,
             automatic = true,
+            flushPrevious = false,
         )
     }
 
@@ -488,7 +571,11 @@ class SessionViewModel(
     private fun applyMediaControl(control: MediaControl) {
         when (control) {
             MediaControl.Play -> playerController.play()
-            MediaControl.Pause -> playerController.pause()
+            MediaControl.Pause -> {
+                flushCurrentPlayback()
+                stopProgressJobs()
+                playerController.pause()
+            }
             MediaControl.Forward -> playerController.seekBy(SEEK_STEP_MS)
             MediaControl.Back -> playerController.seekBy(-SEEK_STEP_MS)
         }
@@ -555,6 +642,132 @@ class SessionViewModel(
         }
     }
 
+    private fun startProgressJobs(identity: PlaybackIdentity) {
+        stopProgressJobs()
+        localProgressJob = viewModelScope.launch {
+            while (isCurrent(identity) && playerController.state.value.isPlaying) {
+                delay(LOCAL_PROGRESS_INTERVAL_MS)
+                if (!isCurrent(identity) || !playerController.state.value.isPlaying) break
+                persistSnapshot(identity, playerController.state.value)
+            }
+        }
+        remoteProgressJob = viewModelScope.launch {
+            while (isCurrent(identity) && playerController.state.value.isPlaying) {
+                delay(REMOTE_PROGRESS_INTERVAL_MS)
+                if (!isCurrent(identity) || !playerController.state.value.isPlaying) break
+                syncSnapshot(playbackRecord(identity, playerController.state.value), identity)
+            }
+        }
+    }
+
+    private fun stopProgressJobs() {
+        localProgressJob?.cancel()
+        localProgressJob = null
+        remoteProgressJob?.cancel()
+        remoteProgressJob = null
+    }
+
+    private fun isCurrent(identity: PlaybackIdentity): Boolean =
+        !cleared && pendingLoad == null && currentPlaybackIdentity == identity
+
+    private suspend fun persistSnapshot(
+        identity: PlaybackIdentity,
+        playerState: PlayerState,
+    ) = playbackProgressRepository.save(playbackRecord(identity, playerState))
+
+    private fun flushCurrentPlayback(
+        naturalEnd: Boolean = false,
+    ) {
+        val identity = currentPlaybackIdentity ?: return
+        if (pendingLoad != null) return
+        val record = playbackRecord(identity, playerController.state.value, naturalEnd)
+        stopProgressJobs()
+        viewModelScope.launch {
+            runCatching { playbackProgressRepository.save(record) }
+        }
+        syncSnapshot(record, identity)
+    }
+
+    private fun syncSnapshot(record: PlaybackRecord, identity: PlaybackIdentity) {
+        val message = PlaybackHistoryMessage(
+            requestId = requestIdFactory(),
+            group = mutableUiState.value.roomId,
+            record = record,
+        )
+        val accepted = socketClient.sendPlaybackHistory(message)
+        syncTimeoutJob?.cancel()
+        syncTimeoutJob = null
+        pendingSync = null
+        if (!accepted) {
+            if (isCurrent(identity)) {
+                mutableUiState.update { it.copy(syncStatus = PlaybackSyncStatus.Failed) }
+            }
+            return
+        }
+
+        val pending = PendingSync(message.requestId, identity)
+        pendingSync = pending
+        if (isCurrent(identity)) {
+            mutableUiState.update { it.copy(syncStatus = PlaybackSyncStatus.Syncing) }
+        }
+        syncTimeoutJob = viewModelScope.launch {
+            delay(SYNC_ACK_TIMEOUT_MS)
+            if (pendingSync == pending) {
+                pendingSync = null
+                syncTimeoutJob = null
+                if (isCurrent(identity)) {
+                    mutableUiState.update { it.copy(syncStatus = PlaybackSyncStatus.Failed) }
+                }
+            }
+        }
+    }
+
+    private fun failPendingSync() {
+        val pending = pendingSync ?: return
+        pendingSync = null
+        syncTimeoutJob?.cancel()
+        syncTimeoutJob = null
+        if (isCurrent(pending.identity)) {
+            mutableUiState.update { it.copy(syncStatus = PlaybackSyncStatus.Failed) }
+        }
+    }
+
+    private fun playbackRecord(
+        identity: PlaybackIdentity,
+        playerState: PlayerState,
+        naturalEnd: Boolean = false,
+    ): PlaybackRecord {
+        val command = identity.command
+        return PlaybackRecord(
+            source = command.source,
+            vid = command.vid,
+            pid = command.pid,
+            title = mutableUiState.value.title,
+            episodeName = episodes.firstOrNull { it.id == command.pid }
+                ?.name
+                .orEmpty()
+                .ifEmpty { mutableUiState.value.episodeName },
+            thumb = currentThumb,
+            positionMs = playerState.positionMs.coerceAtLeast(0L),
+            durationMs = playerState.durationMs.coerceAtLeast(0L),
+            completed = isPlaybackCompleted(
+                positionMs = playerState.positionMs,
+                durationMs = playerState.durationMs,
+                naturalEnd = naturalEnd,
+            ),
+            updatedAtMs = nextSnapshotUpdatedAtMs(),
+        )
+    }
+
+    private fun nextSnapshotUpdatedAtMs(): Long {
+        val minimumNext = if (lastSnapshotUpdatedAtMs == Long.MAX_VALUE) {
+            Long.MAX_VALUE
+        } else {
+            lastSnapshotUpdatedAtMs + 1
+        }
+        return maxOf(nowMs(), minimumNext).also { lastSnapshotUpdatedAtMs = it }
+    }
+
     private fun showQrOverlay() {
         if (mutableUiState.value.page == SessionPage.Player) {
             mutableUiState.update { it.copy(qrVisible = true) }
@@ -562,17 +775,20 @@ class SessionViewModel(
     }
 
     private fun showPairingPage() {
+        flushCurrentPlayback()
         invalidateLoads()
         hideInfo()
         resolutionError = null
         currentLoadCommand = null
         currentLoadGeneration = null
+        currentPlaybackIdentity = null
         acceptedLoadCommand = null
         pendingLoad = null
         pendingDetailsCommand = null
         pendingForegroundPlayIntent = null
         pendingAutoAdvance = null
         episodes = emptyList()
+        currentThumb = ""
         playerController.clear()
         mutableUiState.update {
             it.copy(
@@ -581,6 +797,10 @@ class SessionViewModel(
                 title = "",
                 episodeName = "",
                 playbackUrl = "",
+                sourceName = "",
+                episodes = emptyList(),
+                currentPid = "",
+                syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
                 diagnosticVisible = false,
                 error = null,
@@ -589,6 +809,7 @@ class SessionViewModel(
     }
 
     private fun invalidateLoads() {
+        stopProgressJobs()
         loadGeneration += 1
         pendingLoad = null
         pendingDetailsCommand = null
@@ -616,6 +837,7 @@ class SessionViewModel(
                         ?.name
                         .orEmpty()
                         .ifEmpty { it.episodeName },
+                    currentPid = committedPid.orEmpty(),
                 )
             }
         }
@@ -652,6 +874,16 @@ class SessionViewModel(
         val overlayRevisionAtAcceptance: Long,
     )
 
+    private data class PlaybackIdentity(
+        val generation: Long,
+        val command: ControlCommand.LoadVideo,
+    )
+
+    private data class PendingSync(
+        val requestId: String,
+        val identity: PlaybackIdentity,
+    )
+
     private data class PendingAutoAdvance(
         val command: ControlCommand.LoadVideo,
         val committedGeneration: Long,
@@ -668,6 +900,9 @@ class SessionViewModel(
         const val SEEK_STEP_MS = 15_000L
         const val INFO_TIMEOUT_MS = 5_000L
         const val DIAGNOSTIC_TIMEOUT_MS = 5_000L
+        const val LOCAL_PROGRESS_INTERVAL_MS = 5_000L
+        const val REMOTE_PROGRESS_INTERVAL_MS = 30_000L
+        const val SYNC_ACK_TIMEOUT_MS = 5_000L
         const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"
         const val PLAYBACK_ENDED_MESSAGE = "当前剧集播放结束"

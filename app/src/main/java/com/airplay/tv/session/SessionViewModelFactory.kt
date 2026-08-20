@@ -3,6 +3,7 @@ package com.airplay.tv.session
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.airplay.tv.app.AppContainer
+import com.airplay.tv.feature.history.PlaybackProgressRepository
 import com.airplay.tv.feature.player.PlayerController
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.protocol.SocketClient
@@ -13,12 +14,14 @@ class SessionViewModelFactory private constructor(
     private val socketClientFactory: () -> SocketClient,
     private val videoResolver: VideoResolver,
     private val playerControllerFactory: () -> PlayerController,
+    private val playbackProgressRepository: PlaybackProgressRepository,
 ) : ViewModelProvider.Factory {
     constructor(appContainer: AppContainer) : this(
         roomIdFactory = ::newSessionRoomId,
         socketClientFactory = appContainer::createSocketClient,
         videoResolver = appContainer.videoResolver,
         playerControllerFactory = appContainer::createPlayerController,
+        playbackProgressRepository = appContainer.playbackProgressRepository,
     )
 
     internal constructor(
@@ -26,11 +29,13 @@ class SessionViewModelFactory private constructor(
         socketClient: SocketClient,
         videoResolver: VideoResolver,
         playerController: PlayerController,
+        playbackProgressRepository: PlaybackProgressRepository,
     ) : this(
         roomIdFactory = { roomId },
         socketClientFactory = { socketClient },
         videoResolver = videoResolver,
         playerControllerFactory = { playerController },
+        playbackProgressRepository = playbackProgressRepository,
     )
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -52,6 +57,7 @@ class SessionViewModelFactory private constructor(
                 socketClient = socketClient,
                 videoResolver = videoResolver,
                 playerController = playerController,
+                playbackProgressRepository = playbackProgressRepository,
             ) as T
         } catch (failure: Throwable) {
             cleanupAfterConstructionFailure(socketClient, playerController, failure)

@@ -1,6 +1,8 @@
 package com.airplay.tv.session
 
 import com.airplay.tv.feature.player.ApiResponse
+import com.airplay.tv.feature.history.PlaybackProgressRepository
+import com.airplay.tv.feature.history.PlaybackRecord
 import com.airplay.tv.feature.player.FakePlayerController
 import com.airplay.tv.feature.player.PlayerState
 import com.airplay.tv.feature.player.RemoteControlAction
@@ -48,6 +50,7 @@ class SessionViewModelTest {
     private lateinit var socket: FakeSocketClient
     private lateinit var api: FakeVideoApi
     private lateinit var playerController: FakePlayerController
+    private lateinit var repository: FakePlaybackProgressRepository
     private lateinit var viewModel: SessionViewModel
 
     @Before
@@ -56,14 +59,322 @@ class SessionViewModelTest {
         socket = FakeSocketClient()
         api = FakeVideoApi()
         playerController = FakePlayerController()
+        repository = FakePlaybackProgressRepository()
         viewModel = createViewModel()
         viewModel.onForegroundChanged(true)
     }
 
     @After
     fun tearDown() {
+        invokeOnCleared(viewModel)
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun restoresOnlyIncompletePlaybackAndPublishesEpisodeContext() = runTest(dispatcher) {
+        repository.seed(record(source = "source-a", vid = "series", pid = "p1", positionMs = 42_000))
+        repository.seed(
+            record(
+                source = "source-a",
+                vid = "series",
+                pid = "p2",
+                positionMs = 88_000,
+                completed = true,
+                updatedAtMs = 2,
+            ),
+        )
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+
+        assertEquals(42_000, playerController.loadedStartPositions.single())
+        assertEquals("source-a", viewModel.uiState.value.sourceName)
+        assertEquals("p1", viewModel.uiState.value.currentPid)
+        assertEquals(listOf("p1", "p2"), viewModel.uiState.value.episodes.map { it.id })
+
+        socket.emit(load("series", "p2", source = "source-a"))
+        advanceUntilIdle()
+
+        assertEquals(0, playerController.loadedStartPositions.last())
+        assertEquals("p2", viewModel.uiState.value.currentPid)
+    }
+
+    @Test
+    fun playingPersistsEveryFiveSecondsAndSendsFirstRemoteSnapshotAtThirtySeconds() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail("Series", "p1" to "Episode 1")
+            }
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            repository.saveAttempts.clear()
+            socket.playbackHistorySendAttempts.clear()
+
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 10_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            advanceTimeBy(4_999)
+            runCurrent()
+            assertTrue(repository.saveAttempts.isEmpty())
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(10_000, repository.latest()!!.positionMs)
+
+            advanceTimeBy(24_999)
+            runCurrent()
+            assertTrue(socket.playbackHistorySendAttempts.isEmpty())
+            advanceTimeBy(1)
+            runCurrent()
+
+            val message = socket.playbackHistorySendAttempts.single()
+            assertEquals("room-1", message.group)
+            assertEquals("source-a", message.record.source)
+            assertEquals("series", message.record.vid)
+            assertEquals("p1", message.record.pid)
+            assertEquals(10_000, message.record.positionMs)
+            assertEquals(100_000, message.record.durationMs)
+            assertFalse(message.record.completed)
+            playerController.setState(PlayerState(isPlaying = false))
+            runCurrent()
+        }
+
+    @Test
+    fun pauseFlushesImmediatelyAndOnlyMatchingAcceptedAckMarksSyncSuccessful() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            repository.saveAttempts.clear()
+            socket.playbackHistorySendAttempts.clear()
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 21_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            socket.emit(ControlCommand.Pause)
+            runCurrent()
+            playerController.setState(PlayerState(isPlaying = false))
+            runCurrent()
+
+            assertEquals(21_000, repository.find("source-a", "series", "p1")!!.positionMs)
+            val sent = socket.playbackHistorySendAttempts.single()
+            assertEquals(PlaybackSyncStatus.Syncing, viewModel.uiState.value.syncStatus)
+
+            socket.emitPlaybackHistoryAck(
+                PlaybackHistoryAck("wrong-request", accepted = true, recipientCount = 1),
+            )
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Syncing, viewModel.uiState.value.syncStatus)
+
+            socket.emitPlaybackHistoryAck(
+                PlaybackHistoryAck(sent.requestId, accepted = true, recipientCount = 0),
+            )
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Synced, viewModel.uiState.value.syncStatus)
+
+            val historyCount = socket.playbackHistorySendAttempts.size
+            socket.emit(ControlCommand.ControllerPaired)
+            socket.emit(ControlCommand.ControllerPaired)
+            runCurrent()
+            assertEquals(historyCount, socket.playbackHistorySendAttempts.size)
+        }
+
+    @Test
+    fun switchNaturalEndAndBackgroundEachFlushTheCapturedEpisode() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail(
+                "Series",
+                "p1" to "Episode 1",
+                "p2" to "Episode 2",
+                "p3" to "Episode 3",
+            )
+        }
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        repository.saveAttempts.clear()
+        socket.playbackHistorySendAttempts.clear()
+
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 11_000, durationMs = 100_000),
+        )
+        runCurrent()
+        socket.emit(load("series", "p2", source = "source-a"))
+        runCurrent()
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+        assertEquals(11_000, repository.find("source-a", "series", "p1")!!.positionMs)
+
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 99_000, durationMs = 100_000),
+        )
+        runCurrent()
+        playerController.emitEnded()
+        runCurrent()
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+        assertTrue(repository.find("source-a", "series", "p2")!!.completed)
+
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 33_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        runCurrent()
+
+        assertEquals(33_000, repository.find("source-a", "series", "p3")!!.positionMs)
+        assertEquals(listOf("p1", "p2", "p3"), repository.saveAttempts.map { it.pid })
+        assertEquals(listOf("p1", "p2", "p3"), socket.playbackHistorySendAttempts.map { it.record.pid })
+    }
+
+    @Test
+    fun pendingAckTimesOutAfterFiveSecondsAndDisconnectedSendIsNotRetried() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("series", "p1"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 10_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            socket.emit(ControlCommand.Pause)
+            runCurrent()
+            playerController.setState(PlayerState(isPlaying = false))
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Syncing, viewModel.uiState.value.syncStatus)
+            advanceTimeBy(4_999)
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Syncing, viewModel.uiState.value.syncStatus)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Failed, viewModel.uiState.value.syncStatus)
+
+            socket.playbackHistorySendResult = false
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 20_000, durationMs = 100_000),
+            )
+            runCurrent()
+            socket.emit(ControlCommand.Pause)
+            runCurrent()
+            playerController.setState(PlayerState(isPlaying = false))
+            runCurrent()
+            val attempts = socket.playbackHistorySendAttempts.size
+            assertEquals(PlaybackSyncStatus.Failed, viewModel.uiState.value.syncStatus)
+
+            socket.mutableStates.value = SocketConnectionState.Connected
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(attempts, socket.playbackHistorySendAttempts.size)
+        }
+
+    @Test
+    fun staleResumeLookupCannotLoadOverTheLatestGeneration() = runTest(dispatcher) {
+        repository.findResponse = { source, vid, pid ->
+            if (pid == "p1") {
+                withContext(NonCancellable) { delay(1_000) }
+                record(source, vid, pid, positionMs = 11_000)
+            } else {
+                record(source, vid, pid, positionMs = 22_000)
+            }
+        }
+        startCollectors()
+
+        socket.emit(load("series", "p1"))
+        runCurrent()
+        socket.emit(load("series", "p2"))
+        advanceUntilIdle()
+
+        assertEquals(listOf("https://cdn/series-p2.m3u8"), playerController.loadedUrls)
+        assertEquals(listOf(22_000L), playerController.loadedStartPositions)
+    }
+
+    @Test
+    fun staleFlushCompletionAndAckCannotOverwriteTheCurrentGeneration() =
+        runTest(dispatcher) {
+            repository.beforeSave = { saved ->
+                if (saved.pid == "p1") withContext(NonCancellable) { delay(1_000) }
+            }
+            startCollectors()
+            socket.emit(load("series", "p1"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 11_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            socket.emit(load("series", "p2"))
+            runCurrent()
+            val oldRequestId = socket.playbackHistorySendAttempts.single().requestId
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 22_000, durationMs = 100_000),
+            )
+            runCurrent()
+            socket.emit(ControlCommand.Pause)
+            runCurrent()
+            playerController.setState(PlayerState(isPlaying = false))
+            runCurrent()
+            val currentRequestId = socket.playbackHistorySendAttempts.last().requestId
+            assertEquals("p2", repository.latest()!!.pid)
+
+            socket.emitPlaybackHistoryAck(
+                PlaybackHistoryAck(oldRequestId, accepted = false, recipientCount = 0),
+            )
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Syncing, viewModel.uiState.value.syncStatus)
+            socket.emitPlaybackHistoryAck(
+                PlaybackHistoryAck(currentRequestId, accepted = true, recipientCount = 0),
+            )
+            runCurrent()
+            assertEquals(PlaybackSyncStatus.Synced, viewModel.uiState.value.syncStatus)
+
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals("p2", repository.latest()!!.pid)
+            assertEquals(22_000, repository.latest()!!.positionMs)
+        }
+
+    @Test
+    fun automaticNextCompletesCurrentEpisodeAndResumesTheNextEpisodeOnlyOnce() =
+        runTest(dispatcher) {
+            repository.seed(
+                record(
+                    source = "source-a",
+                    vid = "series",
+                    pid = "p2",
+                    positionMs = 27_000,
+                ),
+            )
+            api.detailResponse = {
+                successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+            }
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a"))
+            advanceUntilIdle()
+            api.sourceCalls.clear()
+            playerController.setState(
+                PlayerState(isPlaying = false, positionMs = 100_000, durationMs = 100_000),
+            )
+            runCurrent()
+
+            playerController.emitEnded()
+            advanceUntilIdle()
+
+            assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+            assertTrue(repository.find("source-a", "series", "p1")!!.completed)
+            assertEquals(27_000, playerController.loadedStartPositions.last())
+
+            playerController.emitEnded()
+            advanceUntilIdle()
+            assertEquals(1, api.sourceCalls.count { it.pid == "p2" })
+        }
 
     @Test
     fun startsOnPairingAndLatestLoadWinsEvenWhenOldResolverIgnoresCancellation() =
@@ -1263,6 +1574,8 @@ class SessionViewModelTest {
             ),
         )
         assertTrue(playerController.calls.isEmpty())
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
     }
 
     @Test
@@ -1390,6 +1703,7 @@ class SessionViewModelTest {
             socketClient = socket,
             videoResolver = VideoResolver(api),
             playerController = playerController,
+            playbackProgressRepository = repository,
         )
 
         val created = factory.create(SessionViewModel::class.java)
@@ -1402,6 +1716,9 @@ class SessionViewModelTest {
         socketClient = socket,
         videoResolver = VideoResolver(api),
         playerController = playerController,
+        playbackProgressRepository = repository,
+        nowMs = { dispatcher.scheduler.currentTime },
+        requestIdFactory = { "request-${socket.playbackHistorySendAttempts.size + 1}" },
     )
 
     private fun load(
@@ -1500,7 +1817,66 @@ class SessionViewModelTest {
         val mode: String,
     )
 
+    private class FakePlaybackProgressRepository : PlaybackProgressRepository {
+        private val records = linkedMapOf<Triple<String, String, String>, PlaybackRecord>()
+        private var latestRecord: PlaybackRecord? = null
+        val saveAttempts = mutableListOf<PlaybackRecord>()
+        var findResponse: suspend (String, String, String) -> PlaybackRecord? =
+            { source, vid, pid -> records[Triple(source, vid, pid)] }
+        var beforeSave: suspend (PlaybackRecord) -> Unit = {}
+
+        fun seed(record: PlaybackRecord) {
+            records[record.key()] = record
+            if (latestRecord == null || record.updatedAtMs >= checkNotNull(latestRecord).updatedAtMs) {
+                latestRecord = record
+            }
+        }
+
+        override suspend fun find(source: String, vid: String, pid: String): PlaybackRecord? =
+            findResponse(source, vid, pid)
+
+        override suspend fun latest(): PlaybackRecord? = latestRecord
+
+        override suspend fun save(record: PlaybackRecord) {
+            saveAttempts += record
+            beforeSave(record)
+            val existing = records[record.key()]
+            if (existing == null || record.updatedAtMs >= existing.updatedAtMs) {
+                records[record.key()] = record
+                if (
+                    latestRecord == null ||
+                    record.updatedAtMs >= checkNotNull(latestRecord).updatedAtMs
+                ) {
+                    latestRecord = record
+                }
+            }
+        }
+
+        private fun PlaybackRecord.key() = Triple(source, vid, pid)
+    }
+
     private companion object {
+        fun record(
+            source: String,
+            vid: String,
+            pid: String,
+            positionMs: Long,
+            durationMs: Long = 100_000,
+            completed: Boolean = false,
+            updatedAtMs: Long = 1,
+        ) = PlaybackRecord(
+            source = source,
+            vid = vid,
+            pid = pid,
+            title = "Series",
+            episodeName = "Episode $pid",
+            thumb = "https://images.example/$vid.jpg",
+            positionMs = positionMs,
+            durationMs = durationMs,
+            completed = completed,
+            updatedAtMs = updatedAtMs,
+        )
+
         fun successfulSource(url: String, type: String? = null) = ApiResponse(
             code = 200,
             data = VideoSourceDto(url = url, type = type),

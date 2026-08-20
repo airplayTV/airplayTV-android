@@ -7,6 +7,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.airplay.tv.feature.history.PlaybackProgressRepository
+import com.airplay.tv.feature.history.PlaybackRecord
 import com.airplay.tv.feature.player.ApiResponse
 import com.airplay.tv.feature.player.Media3PlayerController
 import com.airplay.tv.feature.player.PlayerController
@@ -47,6 +49,7 @@ class MainActivityLifecycleTest {
             socketClient = socket,
             videoResolver = VideoResolver(NoOpVideoApi),
             playerController = playerController,
+            playbackProgressRepository = NoOpPlaybackProgressRepository,
         )
 
         try {
@@ -152,5 +155,13 @@ class MainActivityLifecycleTest {
             mode: String,
             client: String,
         ): ApiResponse<VideoDetailDto> = ApiResponse(code = 500)
+    }
+
+    private object NoOpPlaybackProgressRepository : PlaybackProgressRepository {
+        override suspend fun find(source: String, vid: String, pid: String): PlaybackRecord? = null
+
+        override suspend fun latest(): PlaybackRecord? = null
+
+        override suspend fun save(record: PlaybackRecord) = Unit
     }
 }

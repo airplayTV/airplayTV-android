@@ -1,11 +1,19 @@
 package com.airplay.tv.session
 
 import com.airplay.tv.diagnostics.DiagnosticLogEntry
+import com.airplay.tv.feature.player.Episode
 import com.airplay.tv.protocol.SocketConnectionState
 
 enum class SessionPage {
     Pairing,
     Player,
+}
+
+enum class PlaybackSyncStatus {
+    Idle,
+    Syncing,
+    Synced,
+    Failed,
 }
 
 data class SessionUiState(
@@ -20,6 +28,10 @@ data class SessionUiState(
     val isPlaying: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
+    val sourceName: String = "",
+    val episodes: List<Episode> = emptyList(),
+    val currentPid: String = "",
+    val syncStatus: PlaybackSyncStatus = PlaybackSyncStatus.Idle,
     val error: String? = null,
     val playbackUrl: String = "",
     val qrVisible: Boolean = false,
