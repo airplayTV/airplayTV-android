@@ -296,7 +296,7 @@ class SessionViewModelTest {
         }
 
     @Test
-    fun uniqueControllerIDsAreBoundedWithinOneConnectionGeneration() =
+    fun controllerIDCacheEvictsOldestWithoutSuppressingNewIDs() =
         runTest(dispatcher) {
             startCollectors()
             socket.emit(load("series", "p1", source = "source-a"))
@@ -310,15 +310,21 @@ class SessionViewModelTest {
             repeat(64) { index ->
                 socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-$index"))
             }
-            socket.emit(ControlCommand.ControllerUnpaired)
             runCurrent()
-            assertFalse(viewModel.uiState.value.controllerConnected)
+            assertEquals(64, socket.playbackHistorySendAttempts.size)
+
             socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-64"))
+            runCurrent()
+            assertEquals(65, socket.playbackHistorySendAttempts.size)
+
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-64"))
+            socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-63"))
+            runCurrent()
+            assertEquals(65, socket.playbackHistorySendAttempts.size)
+
             socket.emit(ControlCommand.ControllerPaired(historySyncId = "phone-0"))
             runCurrent()
-
-            assertTrue(viewModel.uiState.value.controllerConnected)
-            assertEquals(64, socket.playbackHistorySendAttempts.size)
+            assertEquals(66, socket.playbackHistorySendAttempts.size)
         }
 
     @Test

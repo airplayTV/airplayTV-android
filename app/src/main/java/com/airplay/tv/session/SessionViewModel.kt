@@ -76,7 +76,7 @@ class SessionViewModel(
     private var controllerAssociationLogged = false
     private var controllerAssociationRevision = 0L
     private var historySyncGeneration: Long? = null
-    private val processedHistorySyncIds = mutableSetOf<String>()
+    private val processedHistorySyncIds = linkedSetOf<String>()
     private var overlayRevision = 0L
     private var diagnosticRevision = 0L
     private var keepScreenOnRevision = 0L
@@ -926,13 +926,13 @@ class SessionViewModel(
 
     private fun claimHistorySyncRequest(historySyncId: String, generation: Long): Long? {
         adoptConnectionGeneration(generation)
-        if (
-            historySyncId in processedHistorySyncIds ||
-            processedHistorySyncIds.size >= MAX_HISTORY_SYNC_IDS_PER_GENERATION
-        ) {
-            return null
-        }
+        if (historySyncId in processedHistorySyncIds) return null
         processedHistorySyncIds.add(historySyncId)
+        if (processedHistorySyncIds.size > MAX_HISTORY_SYNC_IDS_PER_GENERATION) {
+            val oldest = processedHistorySyncIds.iterator()
+            oldest.next()
+            oldest.remove()
+        }
         controllerAssociationRevision += 1
         associationSnapshotJob?.cancel()
         associationSnapshotJob = null

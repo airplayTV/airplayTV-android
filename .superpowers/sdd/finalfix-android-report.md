@@ -165,3 +165,20 @@ GREEN：
 - clean JDK 17/PATH 下执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks --no-parallel --max-workers=1`：`BUILD SUCCESSFUL in 57s`，33/33 tasks 重新执行。
 - Debug JVM：25 suites，235 tests，0 failure，0 error，0 skipped；AndroidTest Kotlin 编译通过。
 - 本轮无 UI 改动，按范围不重复运行 AVD；设备 UI 证据仍沿用第二轮 `AppNavigationTest` 20/20。
+
+## 第五轮 ID 缓存淘汰修复
+
+- 第四轮的 64 ID fail-closed 策略会让长期连接在达到上限后永久拒绝新手机即时同步，本轮改为容量 64 的插入顺序缓存。
+- 重复且仍在缓存内的 ID 不触发同步，也不刷新插入顺序；新 ID 先进入缓存并正常触发一次，容量超过 64 时淘汰最早插入 ID。
+- 被淘汰的极旧 ID 若再次由 API 作为 first Presence 发送，则视为新的关联边沿并再次触发；方法返回时缓存始终不超过 64。
+- generation 切换仍清空缓存；association revision、connection generation 与异步 latest 二次校验逻辑未改变。
+
+第五轮 TDD：
+
+- RED：填满 64 后发送第 65 个新 ID，旧实现发送数仍为 64，未触发新手机即时同步。
+- GREEN：第 65 个新 ID 将发送数增加到 65；重复第 65 个、重复仍缓存的第 63 个均不增加；已淘汰的第 0 个重现后增加到 66。
+- 聚焦缓存淘汰、A/B 去重、A/B latest revision、断线/跨 generation 和跨 Flow generation 竞态测试全部通过。
+- 只读复审：0 Critical、0 Important。
+- clean JDK 17/PATH 下执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --rerun-tasks --no-parallel --max-workers=1`：`BUILD SUCCESSFUL in 55s`，33/33 tasks 重新执行。
+- Debug JVM：25 suites，235 tests，0 failure，0 error，0 skipped；AndroidTest Kotlin 编译通过。
+- 本轮无 UI 改动，未重复运行 AVD。
