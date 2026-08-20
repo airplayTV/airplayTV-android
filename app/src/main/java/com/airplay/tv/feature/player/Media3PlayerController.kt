@@ -41,6 +41,7 @@ class Media3PlayerController(context: Context) : PlayerController {
     private val retryGate = SingleRetryGate()
     private val playbackEndGate = PlaybackEndGate()
     private val lifecycle = ControllerLifecycleGate()
+    private val bufferingStateListener = BufferingStateListener(mutableState)
 
     override val state: StateFlow<PlayerState> = mutableState.asStateFlow()
     override val events: Flow<PlaybackEvent> = mutableEvents.asSharedFlow()
@@ -66,9 +67,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            mutableState.value = mutableState.value.copy(
-                isBuffering = isBufferingPlaybackState(playbackState),
-            )
+            bufferingStateListener.onPlaybackStateChanged(playbackState)
             publishPlaybackState()
             if (playbackState == Player.STATE_ENDED && playbackEndGate.tryAcquire()) {
                 mutableEvents.tryEmit(PlaybackEvent.Ended)
@@ -239,6 +238,16 @@ internal fun loadPlayer(player: Player, mediaItem: MediaItem, startPositionMs: L
 
 internal fun isBufferingPlaybackState(playbackState: Int): Boolean =
     playbackState == Player.STATE_BUFFERING
+
+internal class BufferingStateListener(
+    private val state: MutableStateFlow<PlayerState>,
+) : Player.Listener {
+    override fun onPlaybackStateChanged(playbackState: Int) {
+        state.value = state.value.copy(
+            isBuffering = isBufferingPlaybackState(playbackState),
+        )
+    }
+}
 
 internal fun ResolvedMediaType.media3MimeType(): String? = when (this) {
     ResolvedMediaType.HLS -> MimeTypes.APPLICATION_M3U8

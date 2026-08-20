@@ -5,6 +5,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import java.lang.reflect.Proxy
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -30,9 +31,56 @@ class Media3PlaybackLogicTest {
     }
 
     @Test
+    fun negativeInitialPositionDoesNotIssueSeek() {
+        val calls = mutableListOf<String>()
+
+        loadPlayer(recordingPlayer(calls = calls), mediaItem(), -1L)
+
+        assertEquals(listOf("setMediaItem", "prepare", "play"), calls)
+    }
+
+    @Test
     fun bufferingPlaybackStateIsMarkedAsBuffering() {
         assertTrue(isBufferingPlaybackState(Player.STATE_BUFFERING))
         assertFalse(isBufferingPlaybackState(Player.STATE_READY))
+    }
+
+    @Test
+    fun playbackStateCallbackSetsAndClearsBufferingWithoutOverwritingOtherState() {
+        val state = MutableStateFlow(
+            PlayerState(
+                isPlaying = true,
+                positionMs = 42_000L,
+                durationMs = 60_000L,
+                error = "existing error",
+            ),
+        )
+        val listener = BufferingStateListener(state)
+
+        listener.onPlaybackStateChanged(Player.STATE_BUFFERING)
+
+        assertEquals(
+            PlayerState(
+                isPlaying = true,
+                isBuffering = true,
+                positionMs = 42_000L,
+                durationMs = 60_000L,
+                error = "existing error",
+            ),
+            state.value,
+        )
+
+        listener.onPlaybackStateChanged(Player.STATE_READY)
+
+        assertEquals(
+            PlayerState(
+                isPlaying = true,
+                positionMs = 42_000L,
+                durationMs = 60_000L,
+                error = "existing error",
+            ),
+            state.value,
+        )
     }
 
     @Test
