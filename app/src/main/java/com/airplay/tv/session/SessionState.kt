@@ -39,4 +39,5 @@ data class SessionUiState(
     val qrVisible: Boolean = false,
     val diagnosticLogs: List<DiagnosticLogEntry> = emptyList(),
     val diagnosticVisible: Boolean = false,
+    val keepScreenOn: Boolean = false,
 )

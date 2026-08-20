@@ -1766,6 +1766,154 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun playingAndBufferingKeepScreenOnWithoutExpiry() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        runCurrent()
+
+        playerController.setState(PlayerState(isPlaying = true))
+        runCurrent()
+        advanceTimeBy(600_001)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+
+        playerController.setState(PlayerState(isBuffering = true))
+        runCurrent()
+        advanceTimeBy(600_001)
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+    }
+
+    @Test
+    fun pausedPlaybackKeepsScreenOnForExactlyTenMinutes() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        playerController.setState(PlayerState(isPlaying = true))
+        runCurrent()
+
+        playerController.setState(PlayerState())
+        runCurrent()
+        advanceTimeBy(599_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+    }
+
+    @Test
+    fun naturalEndStartsTenMinuteKeepScreenOnGracePeriod() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        playerController.setState(PlayerState(isPlaying = true))
+        runCurrent()
+
+        playerController.emitEnded(playerController.loadedMediaTokens.single())
+        runCurrent()
+        advanceTimeBy(599_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+    }
+
+    @Test
+    fun recoverablePlayerErrorStartsTenMinuteKeepScreenOnGracePeriod() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("video", "p1"))
+            runCurrent()
+            playerController.setState(PlayerState(isPlaying = true))
+            runCurrent()
+
+            playerController.emitError()
+            runCurrent()
+            playerController.setState(PlayerState(error = "播放失败，请稍后重试"))
+            runCurrent()
+            advanceTimeBy(599_999)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+
+            advanceTimeBy(1)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.keepScreenOn)
+        }
+
+    @Test
+    fun validRemoteOperationResetsPausedKeepScreenOnGracePeriod() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        playerController.setState(PlayerState())
+        runCurrent()
+        advanceTimeBy(500_000)
+        runCurrent()
+
+        viewModel.onRemoteControl(RemoteControlAction.Forward)
+        advanceTimeBy(599_999)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+    }
+
+    @Test
+    fun backgroundPairingAndClearImmediatelyDisableKeepScreenOn() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        runCurrent()
+        playerController.setState(PlayerState(isPlaying = true))
+        runCurrent()
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+
+        viewModel.onForegroundChanged(false)
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+
+        viewModel.onForegroundChanged(true)
+        assertTrue(viewModel.uiState.value.keepScreenOn)
+        viewModel.onBack()
+        viewModel.onBack()
+        assertEquals(SessionPage.Pairing, viewModel.uiState.value.page)
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+
+        invokeOnCleared(viewModel)
+        assertFalse(viewModel.uiState.value.keepScreenOn)
+    }
+
+    @Test
+    fun foregroundRecomputesCurrentPlayerStateAndRejectsOldTimerGeneration() =
+        runTest(dispatcher) {
+            startCollectors()
+            socket.emit(load("video", "p1"))
+            runCurrent()
+            playerController.setState(PlayerState())
+            runCurrent()
+            advanceTimeBy(300_000)
+            runCurrent()
+
+            viewModel.onForegroundChanged(false)
+            playerController.setState(PlayerState(isPlaying = true))
+            runCurrent()
+            assertFalse(viewModel.uiState.value.keepScreenOn)
+
+            viewModel.onForegroundChanged(true)
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+            advanceTimeBy(900_001)
+            runCurrent()
+
+            assertTrue(viewModel.uiState.value.keepScreenOn)
+            viewModel.onForegroundChanged(false)
+        }
+
+    @Test
     fun controllerConnectionTracksAcceptedCommandsAndSocketLifecycle() = runTest(dispatcher) {
         startCollectors()
 
@@ -2079,7 +2227,7 @@ class SessionViewModelTest {
         invokeOnCleared(viewModel)
         advanceUntilIdle()
 
-        assertEquals(beforeClear, viewModel.uiState.value)
+        assertEquals(beforeClear.copy(keepScreenOn = false), viewModel.uiState.value)
         assertEquals(listOf("https://cdn/video-p1.m3u8"), playerController.loadedUrls)
     }
 

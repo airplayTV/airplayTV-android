@@ -54,6 +54,7 @@ class SessionViewModel(
     private var localProgressJob: Job? = null
     private var remoteProgressJob: Job? = null
     private var syncTimeoutJob: Job? = null
+    private var keepScreenOnJob: Job? = null
     private var pendingLoad: PendingLoad? = null
     private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
@@ -74,6 +75,7 @@ class SessionViewModel(
     private var controllerAssociationLogged = false
     private var overlayRevision = 0L
     private var diagnosticRevision = 0L
+    private var keepScreenOnRevision = 0L
     private var cleared = false
 
     init {
@@ -123,6 +125,7 @@ class SessionViewModel(
                         error = resolutionError ?: playerState.error,
                     )
                 }
+                updateWakeState(playerState.isWakeActive())
                 when {
                     playerState.isPlaying && !wasPlaying -> {
                         currentPlaybackIdentity?.let(::startProgressJobs)
@@ -197,6 +200,7 @@ class SessionViewModel(
         if (cleared || this.isForeground == isForeground) return
         this.isForeground = isForeground
         if (!isForeground) {
+            updateWakeState(active = false)
             flushCurrentPlayback()
             stopProgressJobs()
             pendingForegroundPlayIntent = if (pendingLoad != null) {
@@ -213,6 +217,8 @@ class SessionViewModel(
             playerController.pause()
             return
         }
+
+        updateWakeState(playerController.state.value.isWakeActive())
 
         if (pendingLoad != null) {
             resolvePendingLoad()
@@ -232,6 +238,7 @@ class SessionViewModel(
     override fun onCleared() {
         if (cleared) return
         cleared = true
+        updateWakeState(active = false)
         flushCurrentPlayback()
         invalidateLoads()
         stopProgressJobs()
@@ -333,6 +340,7 @@ class SessionViewModel(
             )
         }
 
+        updateWakeState(playerController.state.value.isWakeActive())
         if (isForeground) resolvePendingLoad()
     }
 
@@ -365,6 +373,7 @@ class SessionViewModel(
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
                     }
+                    updateWakeState(active = false)
                     currentPlaybackIdentity
                         ?.takeIf { playerController.state.value.isPlaying }
                         ?.let(::startProgressJobs)
@@ -531,6 +540,7 @@ class SessionViewModel(
         if (handledPlaybackEndGeneration == committedGeneration) return
 
         handledPlaybackEndGeneration = committedGeneration
+        updateWakeState(active = false)
         flushCurrentPlayback(naturalEnd = true)
         appendDiagnostic(DiagnosticLogEntry("PLAY", PLAYBACK_ENDED_MESSAGE))
         if (pendingDetailsCommand == command) {
@@ -546,6 +556,7 @@ class SessionViewModel(
         if (handledPlaybackErrorGeneration == committedGeneration) return
 
         handledPlaybackErrorGeneration = committedGeneration
+        updateWakeState(active = false)
         appendDiagnostic(DiagnosticLogEntry("ERR", PLAYER_ERROR_MESSAGE))
     }
 
@@ -660,6 +671,7 @@ class SessionViewModel(
 
     fun onRemoteControl(action: RemoteControlAction) {
         if (mutableUiState.value.page != SessionPage.Player) return
+        updateWakeState(playerController.state.value.isWakeActive())
 
         when (action) {
             RemoteControlAction.OpenEpisodes -> openEpisodes()
@@ -747,6 +759,34 @@ class SessionViewModel(
             }
         }
     }
+
+    private fun updateWakeState(active: Boolean) {
+        val revision = ++keepScreenOnRevision
+        keepScreenOnJob?.cancel()
+        keepScreenOnJob = null
+        if (cleared || !isForeground || mutableUiState.value.page != SessionPage.Player) {
+            mutableUiState.update { it.copy(keepScreenOn = false) }
+            return
+        }
+
+        mutableUiState.update { it.copy(keepScreenOn = true) }
+        if (active) return
+
+        keepScreenOnJob = viewModelScope.launch {
+            delay(KEEP_SCREEN_ON_GRACE_PERIOD_MS)
+            if (
+                revision == keepScreenOnRevision &&
+                isForeground &&
+                mutableUiState.value.page == SessionPage.Player
+            ) {
+                mutableUiState.update { it.copy(keepScreenOn = false) }
+                keepScreenOnJob = null
+            }
+        }
+    }
+
+    private fun PlayerState.isWakeActive(): Boolean =
+        error == null && (isPlaying || isBuffering)
 
     private fun startProgressJobs(identity: PlaybackIdentity) {
         stopProgressJobs()
@@ -913,6 +953,7 @@ class SessionViewModel(
                 error = null,
             )
         }
+        updateWakeState(active = false)
     }
 
     private fun invalidateLoads() {
@@ -1018,6 +1059,7 @@ class SessionViewModel(
         const val LOCAL_PROGRESS_INTERVAL_MS = 5_000L
         const val REMOTE_PROGRESS_INTERVAL_MS = 30_000L
         const val SYNC_ACK_TIMEOUT_MS = 5_000L
+        const val KEEP_SCREEN_ON_GRACE_PERIOD_MS = 10 * 60 * 1_000L
         const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"
         const val PLAYBACK_ENDED_MESSAGE = "当前剧集播放结束"

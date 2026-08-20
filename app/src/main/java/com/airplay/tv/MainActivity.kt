@@ -1,10 +1,12 @@
 package com.airplay.tv
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -29,6 +31,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by sessionViewModel.uiState.collectAsStateWithLifecycle()
+            SideEffect {
+                setKeepScreenOn(state.keepScreenOn)
+            }
 
             App(
                 state = state,
@@ -46,6 +51,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         sessionViewModel.onForegroundChanged(false)
+        setKeepScreenOn(false)
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        sessionViewModel.onForegroundChanged(false)
+        setKeepScreenOn(false)
+        super.onDestroy()
+    }
+
+    private fun setKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 }
