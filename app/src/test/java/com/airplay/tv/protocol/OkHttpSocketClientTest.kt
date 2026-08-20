@@ -166,6 +166,30 @@ class OkHttpSocketClientTest {
     }
 
     @Test
+    fun malformedPlaybackHistoryAcksEnterNeitherAckNorControlFlow() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val ack = async(start = CoroutineStart.UNDISPATCHED) {
+            socketClient.playbackHistoryAcks.first()
+        }
+        val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+
+        listOf("\"2\"", "true", "null", "1.5", "-1", "2147483648").forEach {
+            connection.message(
+                """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":true,"recipient_count":$it}}""",
+            )
+        }
+
+        assertFalse(ack.isCompleted)
+        assertFalse(command.isCompleted)
+        ack.cancel()
+        command.cancel()
+    }
+
+    @Test
     fun reconnectPolicyUsesExponentialScheduleCapsAndAppliesInjectedJitter() {
         val policy = ReconnectPolicy()
         val expected = listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L)

@@ -77,12 +77,25 @@ class PlaybackHistoryProtocolTest {
                 """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":"true","recipient_count":2}}""",
             ),
         )
-        assertNull(
-            PlaybackHistoryProtocol.parseAck(
-                """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":true,"recipient_count":-1}}""",
-            ),
-        )
         assertNull(PlaybackHistoryProtocol.parseAck("not-json"))
+    }
+
+    @Test
+    fun rejectsMalformedRecipientCounts() {
+        val malformedValues = listOf(
+            "\"2\"",
+            "true",
+            "null",
+            "1.5",
+            "-1",
+            "2147483648",
+        )
+
+        malformedValues.forEach { recipientCount ->
+            val json =
+                """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":true,"recipient_count":$recipientCount}}"""
+            assertNull("recipient_count=$recipientCount", PlaybackHistoryProtocol.parseAck(json))
+        }
     }
 
     private fun message(): PlaybackHistoryMessage = PlaybackHistoryMessage(

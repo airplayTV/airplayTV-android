@@ -11,6 +11,8 @@ import com.airplay.tv.feature.player.VideoLinkDto
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.feature.player.VideoSourceDto
 import com.airplay.tv.protocol.ControlCommand
+import com.airplay.tv.protocol.PlaybackHistoryAck
+import com.airplay.tv.protocol.PlaybackHistoryMessage
 import com.airplay.tv.protocol.ReceivedControlCommand
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
@@ -1423,12 +1425,17 @@ class SessionViewModelTest {
         val mutableStates = MutableStateFlow(SocketConnectionState.Connecting)
         val mutableConnectionGeneration = MutableStateFlow(0L)
         private val mutableCommands = MutableSharedFlow<ReceivedControlCommand>(extraBufferCapacity = 32)
+        private val mutablePlaybackHistoryAcks =
+            MutableSharedFlow<PlaybackHistoryAck>(extraBufferCapacity = 32)
         val connectedRooms = mutableListOf<String>()
+        val playbackHistorySendAttempts = mutableListOf<PlaybackHistoryMessage>()
+        var playbackHistorySendResult = true
         var closeCalls = 0
 
         override val states: StateFlow<SocketConnectionState> = mutableStates
         override val connectionGeneration: StateFlow<Long> = mutableConnectionGeneration
         override val commands: Flow<ReceivedControlCommand> = mutableCommands
+        override val playbackHistoryAcks: Flow<PlaybackHistoryAck> = mutablePlaybackHistoryAcks
 
         suspend fun emit(
             command: ControlCommand,
@@ -1437,8 +1444,17 @@ class SessionViewModelTest {
             mutableCommands.emit(ReceivedControlCommand(command, generation))
         }
 
+        suspend fun emitPlaybackHistoryAck(ack: PlaybackHistoryAck) {
+            mutablePlaybackHistoryAcks.emit(ack)
+        }
+
         override fun connect(roomId: String) {
             connectedRooms += roomId
+        }
+
+        override fun sendPlaybackHistory(message: PlaybackHistoryMessage): Boolean {
+            playbackHistorySendAttempts += message
+            return playbackHistorySendResult
         }
 
         override fun close() {
