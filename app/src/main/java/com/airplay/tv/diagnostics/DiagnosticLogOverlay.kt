@@ -3,6 +3,7 @@ package com.airplay.tv.diagnostics
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
@@ -25,14 +26,26 @@ fun DiagnosticLogOverlay(
     Column(
         modifier = modifier
             .widthIn(max = 560.dp)
+            .fillMaxWidth()
             .background(Color(0xD90B111A), MaterialTheme.shapes.medium)
             .padding(horizontal = 14.dp, vertical = 12.dp)
             .testTag("diagnostic-log-overlay"),
     ) {
         logs.takeLast(MAX_VISIBLE_DIAGNOSTIC_LOGS).forEach { entry ->
-            Row(modifier = Modifier.padding(vertical = 2.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+            ) {
+                Text(
+                    text = formatDiagnosticTime(entry.timestampMillis),
+                    color = Color(0xFF9DAAB9),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                )
                 Text(
                     text = entry.stage,
+                    modifier = Modifier.padding(start = 10.dp),
                     color = MaterialTheme.colorScheme.primary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
@@ -40,7 +53,9 @@ fun DiagnosticLogOverlay(
                 )
                 Text(
                     text = entry.message,
-                    modifier = Modifier.padding(start = 10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 10.dp),
                     color = Color(0xFFD6DEE8),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
@@ -52,4 +67,4 @@ fun DiagnosticLogOverlay(
     }
 }
 
-private const val MAX_VISIBLE_DIAGNOSTIC_LOGS = 8
+private const val MAX_VISIBLE_DIAGNOSTIC_LOGS = 5

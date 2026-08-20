@@ -79,6 +79,23 @@ class Media3PlaybackLogicTest {
     }
 
     @Test
+    fun playbackEndGateAllowsOneEndedCallbackPerLoadedMedia() {
+        val endGate = PlaybackEndGate()
+
+        endGate.reset()
+        assertTrue(endGate.tryAcquire())
+        assertFalse(endGate.tryAcquire())
+
+        endGate.reset()
+        assertTrue(endGate.tryAcquire())
+        assertFalse(endGate.tryAcquire())
+
+        endGate.reset()
+        endGate.invalidate()
+        assertFalse(endGate.tryAcquire())
+    }
+
+    @Test
     fun lifecycleGateMakesClearAndReleaseIdempotent() {
         val lifecycle = ControllerLifecycleGate()
 

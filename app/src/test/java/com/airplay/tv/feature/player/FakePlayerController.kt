@@ -2,6 +2,8 @@ package com.airplay.tv.feature.player
 
 import androidx.media3.common.Player
 import java.lang.reflect.Proxy
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,8 +12,10 @@ class FakePlayerController(
     override val player: Player = createNoOpPlayer(),
 ) : PlayerController {
     private val mutableState = MutableStateFlow(PlayerState())
+    private val mutableEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 16)
 
     override val state: StateFlow<PlayerState> = mutableState.asStateFlow()
+    override val events: Flow<PlaybackEvent> = mutableEvents
 
     val calls = mutableListOf<String>()
     val loadedUrls = mutableListOf<String>()
@@ -27,6 +31,20 @@ class FakePlayerController(
 
     fun clearCalls() {
         calls.clear()
+    }
+
+    fun emitEnded() {
+        check(mutableEvents.subscriptionCount.value > 0) {
+            "Playback event collector must be started before emitEnded()"
+        }
+        check(mutableEvents.tryEmit(PlaybackEvent.Ended))
+    }
+
+    fun emitError() {
+        check(mutableEvents.subscriptionCount.value > 0) {
+            "Playback event collector must be started before emitError()"
+        }
+        check(mutableEvents.tryEmit(PlaybackEvent.Error))
     }
 
     override fun load(url: String, mediaType: ResolvedMediaType) {

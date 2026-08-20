@@ -148,3 +148,44 @@ focused test 随后通过。
 - `compileDebugKotlin` 成功
 - `compileDebugAndroidTestKotlin` 成功
 - `adb devices` 仍为空，未运行 `connectedDebugAndroidTest`
+
+## 2026-08-20 播放 HUD / 自动下一集 / H5 投射会话最终验证
+
+### H5
+
+```powershell
+node --test tests/*.test.mjs
+npm run build
+```
+
+- Node：60 tests，60 passed，0 failed。
+- Vite：15096 modules transformed，生产构建成功。
+- 修复 `tests/casting.test.mjs` 中 direct Node runner 无法解析的 Vite `@` alias，恢复为相对路径导入。
+- 构建保留既有 CSS `//` 注释、混合 dynamic/static import 和大 chunk 警告；均非本任务新增阻塞。
+
+### Android
+
+使用仓库原始 AGP 8.11.1 / Gradle 8.14，清理 `PATH` 中带引号的无效旧 JDK 项后运行：
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:testReleaseUnitTest `
+  :app:lintDebug :app:lintRelease `
+  :app:assembleDebug :app:assembleRelease `
+  :app:compileDebugAndroidTestKotlin `
+  --no-daemon --no-parallel --rerun-tasks
+```
+
+- `BUILD SUCCESSFUL in 1m 38s`
+- 119 actionable tasks，119 executed。
+- debug/release XML 合计：44 suites，292 tests，0 failures，0 errors，0 skipped。
+- debug/release lint、APK 组装、AndroidTest Kotlin 编译全部成功。
+- 首轮 lint 发现日志时间格式使用 API 26 `java.time`；改为每次调用创建 API 23 可用的 `SimpleDateFormat`，避免共享 formatter 线程安全问题，最终 lint 通过。
+- 最终审查后增加终止性播放器错误的固定 `ERR 播放器播放失败` 日志，并按 committed media generation 去重；详情失败/当前 pid 不在剧集列表时记录 `SKIP 剧集列表不可用`，不再误报“已是最后一集”。
+- ADB 当前连接 `CPH2487` 手机而非 Android TV；未安装/运行 instrumentation，TV HUD 安全区、扫码和自然播放结束仍需目标电视验收。
+
+### 质量与 Git 边界
+
+- Android 17 个 changed files、Vue 1 个 changed file 均严格 UTF-8、无 BOM。
+- 两仓库 `git diff --check` 通过。
+- Android index 仅含两个新增 RoomId formatter 文件；其余 tracked 修改未暂存。
+- 未创建提交；无关 Vue 未跟踪文件未触碰。

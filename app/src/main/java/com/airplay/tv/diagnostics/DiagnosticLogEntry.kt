@@ -2,26 +2,42 @@ package com.airplay.tv.diagnostics
 
 import com.airplay.tv.protocol.ControlCommand
 import com.airplay.tv.protocol.SocketConnectionState
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 data class DiagnosticLogEntry(
     val stage: String,
     val message: String,
+    val timestampMillis: Long = System.currentTimeMillis(),
 )
 
 internal const val MAX_DIAGNOSTIC_LOGS = 20
+
+fun formatDiagnosticTime(
+    timestampMillis: Long,
+    timeZone: TimeZone = TimeZone.getDefault(),
+): String = SimpleDateFormat("HH:mm:ss", Locale.ROOT).run {
+    this.timeZone = timeZone
+    format(timestampMillis)
+}
 
 fun List<DiagnosticLogEntry>.appendDiagnostic(
     entry: DiagnosticLogEntry,
 ): List<DiagnosticLogEntry> = (this + entry).takeLast(MAX_DIAGNOSTIC_LOGS)
 
-fun SocketConnectionState.toDiagnosticLog(): DiagnosticLogEntry = when (this) {
-    SocketConnectionState.Connecting -> DiagnosticLogEntry("WS", "连接中")
-    SocketConnectionState.Connected -> DiagnosticLogEntry("WS", "已连接")
-    SocketConnectionState.Reconnecting -> DiagnosticLogEntry("WS", "重连中")
-    SocketConnectionState.Closed -> DiagnosticLogEntry("WS", "已断开")
+fun SocketConnectionState.toDiagnosticLog(
+    timestampMillis: Long = System.currentTimeMillis(),
+): DiagnosticLogEntry = when (this) {
+    SocketConnectionState.Connecting -> DiagnosticLogEntry("WS", "连接中", timestampMillis)
+    SocketConnectionState.Connected -> DiagnosticLogEntry("WS", "已连接", timestampMillis)
+    SocketConnectionState.Reconnecting -> DiagnosticLogEntry("WS", "重连中", timestampMillis)
+    SocketConnectionState.Closed -> DiagnosticLogEntry("WS", "已断开", timestampMillis)
 }
 
-fun ControlCommand.toDiagnosticLog(): DiagnosticLogEntry = DiagnosticLogEntry(
+fun ControlCommand.toDiagnosticLog(
+    timestampMillis: Long = System.currentTimeMillis(),
+): DiagnosticLogEntry = DiagnosticLogEntry(
     stage = "CTL",
     message = when (this) {
         is ControlCommand.LoadVideo -> "收到加载视频指令"
@@ -41,4 +57,5 @@ fun ControlCommand.toDiagnosticLog(): DiagnosticLogEntry = DiagnosticLogEntry(
         ControlCommand.ControllerUnpaired -> "手机控制器已断开"
         ControlCommand.HistoryIgnored -> "收到历史指令"
     },
+    timestampMillis = timestampMillis,
 )

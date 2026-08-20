@@ -12,8 +12,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 private const val POSITION_UPDATE_INTERVAL_MS = 500L
@@ -34,10 +37,13 @@ class Media3PlayerController(context: Context) : PlayerController {
         .getSystemService(AudioManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val mutableState = MutableStateFlow(PlayerState())
+    private val mutableEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
     private val retryGate = SingleRetryGate()
+    private val playbackEndGate = PlaybackEndGate()
     private val lifecycle = ControllerLifecycleGate()
 
     override val state: StateFlow<PlayerState> = mutableState.asStateFlow()
+    override val events: Flow<PlaybackEvent> = mutableEvents.asSharedFlow()
 
     private var lastAudibleVolume: Int? = currentVolume().takeIf { it > 0 }
 
@@ -61,6 +67,9 @@ class Media3PlayerController(context: Context) : PlayerController {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             publishPlaybackState()
+            if (playbackState == Player.STATE_ENDED && playbackEndGate.tryAcquire()) {
+                mutableEvents.tryEmit(PlaybackEvent.Ended)
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -73,6 +82,7 @@ class Media3PlayerController(context: Context) : PlayerController {
                     isPlaying = false,
                     error = PLAYBACK_ERROR_MESSAGE,
                 )
+                mutableEvents.tryEmit(PlaybackEvent.Error)
             }
         }
     }
@@ -86,6 +96,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
+        playbackEndGate.reset()
         lifecycle.onLoad()
         mutableState.value = PlayerState()
         player.setMediaItem(buildMediaItem(url, mediaType))
@@ -153,6 +164,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         if (!lifecycle.tryClear()) return
         stopPositionUpdates()
         retryGate.reset()
+        playbackEndGate.invalidate()
         player.stop()
         player.clearMediaItems()
         mutableState.value = PlayerState()
@@ -163,6 +175,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         checkMainThread()
         if (!lifecycle.tryRelease()) return
         stopPositionUpdates()
+        playbackEndGate.invalidate()
         player.removeListener(listener)
         player.release()
         mutableState.value = PlayerState()
@@ -255,6 +268,24 @@ internal class SingleRetryGate {
 
     fun reset() {
         retryUsed = false
+    }
+}
+
+internal class PlaybackEndGate {
+    private var available = false
+
+    fun tryAcquire(): Boolean {
+        if (!available) return false
+        available = false
+        return true
+    }
+
+    fun reset() {
+        available = true
+    }
+
+    fun invalidate() {
+        available = false
     }
 }
 

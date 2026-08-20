@@ -736,6 +736,211 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun playbackEndAutomaticallyLoadsNextEpisodeAndPreservesSeriesContext() =
+        runTest(dispatcher) {
+            api.detailResponse = {
+                successfulDetail(
+                    "Series title",
+                    "p1" to "Episode 1",
+                    "p2" to "Episode 2",
+                    "p3" to "Episode 3",
+                )
+            }
+            startCollectors()
+            socket.emit(load("series", "p1", source = "source-a", mode = "private-mode"))
+            advanceUntilIdle()
+            api.sourceCalls.clear()
+
+            playerController.emitEnded()
+            advanceUntilIdle()
+
+            assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+            assertEquals("source-a", api.sourceCalls.single().source)
+            assertEquals("private-mode", api.sourceCalls.single().mode)
+            assertEquals("Series title", viewModel.uiState.value.title)
+            assertEquals("Episode 2", viewModel.uiState.value.episodeName)
+
+            playerController.emitEnded()
+            advanceUntilIdle()
+            assertEquals(listOf("p2", "p3"), api.sourceCalls.map { it.pid })
+            assertEquals("private-mode", api.sourceCalls.last().mode)
+        }
+
+    @Test
+    fun playbackEndOnFinalEpisodeDoesNotLoopOrResolveAnotherSource() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p2", mode = "private-mode"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+
+        playerController.emitEnded()
+        advanceUntilIdle()
+
+        assertTrue(api.sourceCalls.isEmpty())
+        assertEquals("https://cdn/series-p2.m3u8", playerController.loadedUrl)
+        assertEquals("已是最后一集", viewModel.uiState.value.diagnosticLogs.last().message)
+    }
+
+    @Test
+    fun playbackEndWithUnavailableEpisodeListDoesNotClaimFinalEpisode() = runTest(dispatcher) {
+        api.detailResponse = { throw IllegalStateException("temporary detail failure") }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        playerController.emitEnded()
+        advanceUntilIdle()
+
+        assertEquals("剧集列表不可用", viewModel.uiState.value.diagnosticLogs.last().message)
+        assertFalse(viewModel.uiState.value.toString().contains("temporary detail failure"))
+    }
+
+    @Test
+    fun terminalPlaybackErrorWritesOneSafeDiagnosticPerCommittedMedia() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+
+        playerController.emitError()
+        playerController.emitError()
+        advanceUntilIdle()
+
+        assertEquals(
+            1,
+            viewModel.uiState.value.diagnosticLogs.count {
+                it.stage == "ERR" && it.message == "播放器播放失败"
+            },
+        )
+    }
+
+    @Test
+    fun duplicatePlaybackEndDuringReplacementStartsOnlyOneNextLoad() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+        api.sourceResponse = { vid, pid ->
+            delay(1_000)
+            successfulSource("https://cdn/$vid-$pid.m3u8")
+        }
+
+        playerController.emitEnded()
+        playerController.emitEnded()
+        runCurrent()
+
+        assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+        advanceUntilIdle()
+        assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+    }
+
+    @Test
+    fun playbackEndWaitsForMatchingDelayedDetailsThenAdvancesOnce() = runTest(dispatcher) {
+        api.detailResponse = {
+            delay(1_000)
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1", mode = "private-mode"))
+        runCurrent()
+        assertEquals("https://cdn/series-p1.m3u8", playerController.loadedUrl)
+        api.sourceCalls.clear()
+
+        playerController.emitEnded()
+        playerController.emitEnded()
+        runCurrent()
+        assertTrue(api.sourceCalls.isEmpty())
+
+        advanceUntilIdle()
+        assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+        assertEquals("private-mode", api.sourceCalls.single().mode)
+    }
+
+    @Test
+    fun manualReplacementCancelsPendingAutoAdvanceFromDelayedDetails() = runTest(dispatcher) {
+        api.detailResponse = { vid ->
+            if (vid == "series") {
+                withContext(NonCancellable) {
+                    delay(1_000)
+                    successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+                }
+            } else {
+                successfulDetail("Replacement", "q1" to "Replacement 1")
+            }
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        runCurrent()
+        playerController.emitEnded()
+        runCurrent()
+
+        socket.emit(load("replacement", "q1", mode = "new-mode"))
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("series" to "p1", "replacement" to "q1"),
+            api.sourceCalls.map { it.vid to it.pid },
+        )
+        assertEquals("https://cdn/replacement-q1.m3u8", playerController.loadedUrl)
+    }
+
+    @Test
+    fun nextCommandCancelsPendingAutoAdvanceFromDelayedDetails() = runTest(dispatcher) {
+        api.detailResponse = {
+            delay(1_000)
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        runCurrent()
+        playerController.emitEnded()
+        runCurrent()
+
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+
+        assertEquals(listOf("p1"), api.sourceCalls.map { it.pid })
+        assertEquals("https://cdn/series-p1.m3u8", playerController.loadedUrl)
+    }
+
+    @Test
+    fun failedAutomaticNextRollsBackAndDuplicateEndDoesNotRetry() = runTest(dispatcher) {
+        api.detailResponse = {
+            successfulDetail("Series", "p1" to "Episode 1", "p2" to "Episode 2")
+        }
+        startCollectors()
+        socket.emit(load("series", "p1"))
+        advanceUntilIdle()
+        api.sourceCalls.clear()
+        api.sourceResponse = { _, _ -> throw IllegalStateException("secret failure") }
+
+        playerController.emitEnded()
+        advanceUntilIdle()
+        playerController.emitEnded()
+        advanceUntilIdle()
+
+        assertEquals(listOf("p2"), api.sourceCalls.map { it.pid })
+        assertEquals("Episode 1", viewModel.uiState.value.episodeName)
+        assertEquals("下一集加载失败", viewModel.uiState.value.diagnosticLogs.last().message)
+        assertFalse(viewModel.uiState.value.toString().contains("secret failure"))
+    }
+
+    @Test
+    fun playbackEndOutsidePlayerPageDoesNotResolveSource() = runTest(dispatcher) {
+        startCollectors()
+
+        playerController.emitEnded()
+        advanceUntilIdle()
+
+        assertTrue(api.sourceCalls.isEmpty())
+    }
+
+    @Test
     fun previousAndNextPreserveOriginalModeAndRespectEpisodeBoundaries() =
         runTest(dispatcher) {
             api.detailResponse = {
@@ -981,7 +1186,50 @@ class SessionViewModelTest {
 
         assertTrue(viewModel.uiState.value.controllerConnected)
         assertEquals("手机控制器已关联", viewModel.uiState.value.diagnosticLogs.last().message)
+        assertEquals(
+            1,
+            viewModel.uiState.value.diagnosticLogs.count { it.message == "手机控制器已关联" },
+        )
+
+        socket.emit(ControlCommand.ControllerUnpaired)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+
+        assertEquals(
+            2,
+            viewModel.uiState.value.diagnosticLogs.count { it.message == "手机控制器已关联" },
+        )
         assertTrue(playerController.calls.isEmpty())
+    }
+
+    @Test
+    fun playbackCommandDoesNotConsumeFirstAssociationLogEdge() = runTest(dispatcher) {
+        startCollectors()
+
+        socket.emit(ControlCommand.Play)
+        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+
+        assertEquals(
+            1,
+            viewModel.uiState.value.diagnosticLogs.count { it.message == "手机控制器已关联" },
+        )
+    }
+
+    @Test
+    fun unpairThenPlaybackCommandStillAllowsNewAssociationLogEdge() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerUnpaired)
+        socket.emit(ControlCommand.Play)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+
+        assertEquals(
+            2,
+            viewModel.uiState.value.diagnosticLogs.count { it.message == "手机控制器已关联" },
+        )
     }
 
     @Test
@@ -1040,6 +1288,10 @@ class SessionViewModelTest {
         socket.emit(ControlCommand.ControllerPaired, generation = 2L)
         runCurrent()
         assertTrue(viewModel.uiState.value.controllerConnected)
+        assertEquals(
+            2,
+            viewModel.uiState.value.diagnosticLogs.count { it.message == "手机控制器已关联" },
+        )
     }
 
     @Test

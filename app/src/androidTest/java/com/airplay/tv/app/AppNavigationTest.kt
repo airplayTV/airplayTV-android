@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
 import androidx.media3.exoplayer.ExoPlayer
@@ -18,6 +19,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.airplay.tv.protocol.SocketConnectionState
 import com.airplay.tv.diagnostics.DiagnosticLogEntry
+import com.airplay.tv.feature.player.playerConnectionStatusTopPadding
 import com.airplay.tv.session.SessionPage
 import com.airplay.tv.session.SessionUiState
 import org.junit.After
@@ -101,7 +103,7 @@ class AppNavigationTest {
     }
 
     @Test
-    fun pairingShowsTheFullRoomIdWithoutEllipsis() {
+    fun pairingMiddleEllipsizesLongRoomId() {
         val roomId = "0123456789abcdef0123456789abcdef"
 
         composeRule.setContent {
@@ -112,7 +114,7 @@ class AppNavigationTest {
             )
         }
 
-        composeRule.onNodeWithText("房间号：$roomId").assertIsDisplayed()
+        composeRule.onNodeWithText("房间号：01234567...9abcdef").assertIsDisplayed()
     }
 
     @Test
@@ -196,25 +198,34 @@ class AppNavigationTest {
     }
 
     @Test
-    fun playerUsesIndependentHudLayersAndIconState() {
+    fun playerHudLayersFollowInfoVisibleAndIconState() {
+        var state by mutableStateOf(
+            SessionUiState(
+                roomId = "room-1",
+                page = SessionPage.Player,
+                connection = SocketConnectionState.Connected,
+                infoVisible = false,
+                diagnosticVisible = true,
+                diagnosticLogs = listOf(DiagnosticLogEntry("CTL", "暂停播放")),
+                playbackUrl = "https://cdn.example/video.m3u8",
+                isPlaying = true,
+                positionMs = 10_000,
+                durationMs = 20_000,
+            ),
+        )
         composeRule.setContent {
             AppNavigation(
-                state = SessionUiState(
-                    roomId = "room-1",
-                    page = SessionPage.Player,
-                    connection = SocketConnectionState.Connected,
-                    infoVisible = true,
-                    diagnosticVisible = true,
-                    diagnosticLogs = listOf(DiagnosticLogEntry("CTL", "暂停播放")),
-                    playbackUrl = "https://cdn.example/video.m3u8",
-                    isPlaying = true,
-                    positionMs = 10_000,
-                    durationMs = 20_000,
-                ),
+                state = state,
                 player = player,
                 onBack = {},
             )
         }
+
+        composeRule.onNodeWithTag("connection-status").assertDoesNotExist()
+        composeRule.onNodeWithTag("diagnostic-overlay-container").assertDoesNotExist()
+        composeRule.onNodeWithTag("player-info-overlay").assertDoesNotExist()
+
+        composeRule.runOnIdle { state = state.copy(infoVisible = true) }
 
         composeRule.onNodeWithTag("connection-status").assertIsDisplayed()
         composeRule.onNodeWithTag("diagnostic-overlay-container").assertIsDisplayed()
@@ -269,8 +280,8 @@ class AppNavigationTest {
     }
 
     @Test
-    fun playerDiagnosticUsesLatestEightRowsAndDoesNotOverlapHud() {
-        val logs = (1..10).map { index -> DiagnosticLogEntry("CTL", "日志-$index") }
+    fun playerDiagnosticUsesLatestFiveRowsAndDoesNotOverlapHud() {
+        val logs = (1..6).map { index -> DiagnosticLogEntry("CTL", "日志-$index") }
         composeRule.setContent {
             AppNavigation(
                 state = SessionUiState(
@@ -278,7 +289,7 @@ class AppNavigationTest {
                     page = SessionPage.Player,
                     connection = SocketConnectionState.Connected,
                     infoVisible = true,
-                    diagnosticVisible = true,
+                    diagnosticVisible = false,
                     diagnosticLogs = logs,
                     durationMs = 30_000,
                 ),
@@ -288,8 +299,7 @@ class AppNavigationTest {
         }
 
         composeRule.onNodeWithText("日志-1").assertDoesNotExist()
-        composeRule.onNodeWithText("日志-2").assertDoesNotExist()
-        (3..10).forEach { index ->
+        (2..6).forEach { index ->
             composeRule.onNodeWithText("日志-$index").assertIsDisplayed()
         }
         assertNoOverlap(
@@ -310,12 +320,13 @@ class AppNavigationTest {
     }
 
     @Test
-    fun diagnosticVisibilityAloneDoesNotForcePlayerProgressOverlay() {
+    fun playerDiagnosticsRequireInfoVisibility() {
         composeRule.setContent {
             AppNavigation(
                 state = SessionUiState(
                     roomId = "room-1",
                     page = SessionPage.Player,
+                    infoVisible = false,
                     diagnosticVisible = true,
                     diagnosticLogs = listOf(DiagnosticLogEntry("CTL", "暂停播放")),
                 ),
@@ -324,32 +335,42 @@ class AppNavigationTest {
             )
         }
 
-        composeRule.onNodeWithTag("diagnostic-log-overlay").assertIsDisplayed()
-        composeRule.onNodeWithTag("player-info-overlay").assertDoesNotExist()
-    }
-
-    @Test
-    fun connectionStatusRemainsWhenOtherPlayerOverlaysAreHidden() {
-        composeRule.setContent {
-            AppNavigation(
-                state = SessionUiState(
-                    roomId = "room-1",
-                    page = SessionPage.Player,
-                    connection = SocketConnectionState.Reconnecting,
-                ),
-                player = player,
-                onBack = {},
-            )
-        }
-
-        composeRule.onNodeWithTag("connection-status").assertIsDisplayed()
-        composeRule.onNodeWithText("重连中").assertIsDisplayed()
         composeRule.onNodeWithTag("diagnostic-log-overlay").assertDoesNotExist()
         composeRule.onNodeWithTag("player-info-overlay").assertDoesNotExist()
     }
 
     @Test
-    fun qrOverlayKeepsPlayerVisibleAndShowsTheFullRoomId() {
+    fun playerConnectionStatusFollowsInfoVisibility() {
+        var state by mutableStateOf(
+            SessionUiState(
+                roomId = "room-1",
+                page = SessionPage.Player,
+                connection = SocketConnectionState.Reconnecting,
+                infoVisible = false,
+            ),
+        )
+        composeRule.setContent {
+            AppNavigation(
+                state = state,
+                player = player,
+                onBack = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("connection-status").assertDoesNotExist()
+        composeRule.onNodeWithTag("diagnostic-log-overlay").assertDoesNotExist()
+        composeRule.onNodeWithTag("player-info-overlay").assertDoesNotExist()
+
+        composeRule.runOnIdle { state = state.copy(infoVisible = true) }
+
+        composeRule.onNodeWithTag("connection-status").assertIsDisplayed()
+        composeRule.onNodeWithText("重连中").assertIsDisplayed()
+        composeRule.onNodeWithTag("diagnostic-log-overlay").assertDoesNotExist()
+        composeRule.onNodeWithTag("player-info-overlay").assertIsDisplayed()
+    }
+
+    @Test
+    fun qrCardKeepsPlayerVisibleAndUsesTheMiddleEllipsizedRoomId() {
         val roomId = "0123456789abcdef0123456789abcdef"
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             player.playWhenReady = true
@@ -368,12 +389,45 @@ class AppNavigationTest {
         }
 
         composeRule.onNodeWithTag("player-screen").assertIsDisplayed()
-        composeRule.onNodeWithTag("player-qr-overlay").assertIsDisplayed()
+        composeRule.onNodeWithTag("player-qr-card").assertIsDisplayed()
+        composeRule.onNodeWithTag("player-qr-overlay").assertDoesNotExist()
         composeRule.onNodeWithTag("pairing-screen").assertDoesNotExist()
-        composeRule.onNodeWithText("房间号：$roomId").assertIsDisplayed()
+        composeRule.onNodeWithText("房间号：01234567...9abcdef").assertIsDisplayed()
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             assertTrue(player.playWhenReady)
         }
+    }
+
+    @Test
+    fun qrCardUsesTheTopRightCornerAndMovesConnectionStatusBelowIt() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    qrVisible = true,
+                    infoVisible = true,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        val cardBounds = composeRule.onNodeWithTag("player-qr-card")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val statusBounds = composeRule.onNodeWithTag("connection-status")
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+
+        assertEquals(40.dp, cardBounds.top)
+        assertEquals(
+            48.dp,
+            composeRule.onRoot().getUnclippedBoundsInRoot().right - cardBounds.right,
+        )
+        assertEquals(292.dp, statusBounds.top)
+        assertEquals(292.dp, playerConnectionStatusTopPadding(qrVisible = true))
+        assertEquals(40.dp, playerConnectionStatusTopPadding(qrVisible = false))
     }
 
     private fun assertNoOverlap(
@@ -401,4 +455,5 @@ class AppNavigationTest {
 
     private fun DpRect.intersects(other: DpRect): Boolean =
         left < other.right && right > other.left && top < other.bottom && bottom > other.top
+
 }

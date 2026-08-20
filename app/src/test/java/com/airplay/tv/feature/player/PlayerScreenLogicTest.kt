@@ -1,6 +1,7 @@
 package com.airplay.tv.feature.player
 
 import com.airplay.tv.session.SessionUiState
+import com.airplay.tv.diagnostics.DiagnosticLogEntry
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,5 +23,24 @@ class PlayerScreenLogicTest {
         assertFalse(shouldShowPlaybackInfo(base))
         assertTrue(shouldShowPlaybackInfo(base.copy(infoVisible = true)))
         assertFalse(shouldShowPlaybackInfo(base.copy(diagnosticVisible = true)))
+    }
+
+    @Test
+    fun playerConnectionAndDiagnosticsFollowInfoVisibility() {
+        val base = SessionUiState(
+            roomId = "room-1",
+            diagnosticVisible = false,
+            diagnosticLogs = listOf(DiagnosticLogEntry("CTL", "暂停播放")),
+        )
+
+        assertFalse(shouldShowPlayerConnection(base))
+        assertFalse(shouldShowPlayerDiagnostics(base))
+        assertTrue(shouldShowPlayerConnection(base.copy(infoVisible = true)))
+        assertTrue(shouldShowPlayerDiagnostics(base.copy(infoVisible = true)))
+        assertFalse(
+            shouldShowPlayerDiagnostics(
+                base.copy(infoVisible = true, diagnosticLogs = emptyList()),
+            ),
+        )
     }
 }

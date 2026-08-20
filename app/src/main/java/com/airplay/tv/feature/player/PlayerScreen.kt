@@ -39,6 +39,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.airplay.tv.diagnostics.DiagnosticLogOverlay
 import com.airplay.tv.feature.pairing.ConnectionStatus
 import com.airplay.tv.session.SessionUiState
 import java.util.Locale
@@ -73,13 +74,29 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        ConnectionStatus(
-            connection = state.connection,
-            controllerConnected = state.controllerConnected,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 40.dp, end = 48.dp),
-        )
+        if (shouldShowPlayerConnection(state)) {
+            ConnectionStatus(
+                connection = state.connection,
+                controllerConnected = state.controllerConnected,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = playerConnectionStatusTopPadding(state.qrVisible),
+                        end = 48.dp,
+                    ),
+            )
+        }
+
+        if (shouldShowPlayerDiagnostics(state)) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 48.dp, bottom = 132.dp)
+                    .testTag("diagnostic-overlay-container"),
+            ) {
+                DiagnosticLogOverlay(logs = state.diagnosticLogs)
+            }
+        }
 
         if (shouldShowPlaybackInfo(state)) {
             PlayerInfoOverlay(
@@ -106,6 +123,15 @@ internal fun shouldShowLoadingOverlay(state: SessionUiState): Boolean =
 
 internal fun shouldShowPlaybackInfo(state: SessionUiState): Boolean =
     state.infoVisible
+
+internal fun shouldShowPlayerConnection(state: SessionUiState): Boolean =
+    state.infoVisible
+
+internal fun playerConnectionStatusTopPadding(qrVisible: Boolean) =
+    if (qrVisible) 292.dp else 40.dp
+
+internal fun shouldShowPlayerDiagnostics(state: SessionUiState): Boolean =
+    state.infoVisible && state.diagnosticLogs.isNotEmpty()
 
 @Composable
 private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifier) {

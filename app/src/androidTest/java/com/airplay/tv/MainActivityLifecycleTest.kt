@@ -96,6 +96,7 @@ class MainActivityLifecycleTest {
         private val delegate = Media3PlayerController(context)
 
         override val state = delegate.state
+        override val events = delegate.events
         override val player = delegate.player
         val calls = mutableListOf<String>()
         var releaseCalls = 0

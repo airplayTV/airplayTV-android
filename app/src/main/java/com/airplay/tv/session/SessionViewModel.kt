@@ -7,6 +7,7 @@ import com.airplay.tv.diagnostics.DiagnosticLogEntry
 import com.airplay.tv.diagnostics.appendDiagnostic
 import com.airplay.tv.diagnostics.toDiagnosticLog
 import com.airplay.tv.feature.player.Episode
+import com.airplay.tv.feature.player.PlaybackEvent
 import com.airplay.tv.feature.player.PlayerController
 import com.airplay.tv.feature.player.RemoteControlAction
 import com.airplay.tv.feature.player.VideoDetails
@@ -44,12 +45,17 @@ class SessionViewModel(
     private var pendingLoad: PendingLoad? = null
     private var pendingDetailsCommand: ControlCommand.LoadVideo? = null
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
+    private var currentLoadGeneration: Long? = null
     private var acceptedLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
+    private var handledPlaybackEndGeneration: Long? = null
+    private var handledPlaybackErrorGeneration: Long? = null
+    private var pendingAutoAdvance: PendingAutoAdvance? = null
     private var pendingMediaControls: PendingMediaControls? = null
     private var resolutionError: String? = null
     private var isForeground = false
     private var pendingForegroundPlayIntent: Boolean? = null
+    private var controllerAssociationLogged = false
     private var overlayRevision = 0L
     private var diagnosticRevision = 0L
     private var cleared = false
@@ -72,6 +78,12 @@ class SessionViewModel(
                         },
                     )
                 }
+                if (
+                    connection == SocketConnectionState.Reconnecting ||
+                    connection == SocketConnectionState.Closed
+                ) {
+                    controllerAssociationLogged = false
+                }
                 if (connection != previousConnection) {
                     appendDiagnostic(connection.toDiagnosticLog())
                 }
@@ -79,6 +91,7 @@ class SessionViewModel(
         }
         viewModelScope.launch {
             socketClient.connectionGeneration.collect {
+                controllerAssociationLogged = false
                 mutableUiState.update { it.copy(controllerConnected = false) }
             }
         }
@@ -95,13 +108,29 @@ class SessionViewModel(
             }
         }
         viewModelScope.launch {
+            playerController.events.collect { event ->
+                when (event) {
+                    PlaybackEvent.Ended -> handlePlaybackEnded()
+                    PlaybackEvent.Error -> handlePlaybackError()
+                }
+            }
+        }
+        viewModelScope.launch {
             socketClient.commands.collect { received ->
                 if (received.generation != socketClient.connectionGeneration.value) {
                     return@collect
                 }
                 val command = received.command
-                if (command != ControlCommand.HistoryIgnored) {
+                val shouldAppendDiagnostic = when (command) {
+                    ControlCommand.HistoryIgnored -> false
+                    ControlCommand.ControllerPaired -> !controllerAssociationLogged
+                    else -> true
+                }
+                if (shouldAppendDiagnostic) {
                     appendDiagnostic(command.toDiagnosticLog())
+                }
+                if (command == ControlCommand.ControllerPaired) {
+                    controllerAssociationLogged = true
                 }
                 handleCommand(command)
             }
@@ -196,6 +225,7 @@ class SessionViewModel(
             ControlCommand.Next -> loadAdjacentEpisode(1)
             ControlCommand.ControllerPaired -> Unit
             ControlCommand.ControllerUnpaired -> {
+                controllerAssociationLogged = false
                 mutableUiState.update { it.copy(controllerConnected = false) }
             }
             ControlCommand.HistoryIgnored -> Unit
@@ -205,7 +235,9 @@ class SessionViewModel(
     private fun loadVideo(
         command: ControlCommand.LoadVideo,
         preserveEpisodes: Boolean = false,
+        automatic: Boolean = false,
     ) {
+        if (!automatic) pendingAutoAdvance = null
         loadGeneration += 1
         resolveJob?.cancel()
         detailJob?.cancel()
@@ -217,6 +249,7 @@ class SessionViewModel(
         pendingLoad = PendingLoad(
             command = command,
             preserveEpisodes = preserveEpisodes,
+            automatic = automatic,
             overlayRevisionAtAcceptance = overlayRevision,
         )
         resolutionError = null
@@ -261,6 +294,9 @@ class SessionViewModel(
                     discardPendingMediaControls(generation)
                     pendingLoad = null
                     rollbackAcceptedCursor(load)
+                    if (load.automatic) {
+                        appendDiagnostic(DiagnosticLogEntry("ERR", AUTO_NEXT_ERROR_MESSAGE))
+                    }
                     resolutionError = LOAD_ERROR_MESSAGE
                     mutableUiState.update {
                         it.copy(loading = false, error = LOAD_ERROR_MESSAGE)
@@ -273,6 +309,7 @@ class SessionViewModel(
                 return@launch
             }
 
+            appendDiagnostic(DiagnosticLogEntry("API", SOURCE_RESOLVED_MESSAGE))
             playerController.load(resolved.url, resolved.mediaType)
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }
@@ -283,6 +320,7 @@ class SessionViewModel(
             pendingControls.forEach(::applyMediaControl)
             pendingLoad = null
             currentLoadCommand = command
+            currentLoadGeneration = generation
             acceptedLoadCommand = command
             resolutionError = null
             mutableUiState.update {
@@ -331,6 +369,9 @@ class SessionViewModel(
 
             pendingDetailsCommand = null
             episodes = details.episodes
+            if (details.title.isNotEmpty() || details.episodes.isNotEmpty()) {
+                appendDiagnostic(DiagnosticLogEntry("API", DETAILS_LOADED_MESSAGE))
+            }
             mutableUiState.update {
                 it.copy(
                     title = details.title.ifEmpty { it.title },
@@ -341,16 +382,81 @@ class SessionViewModel(
                         .ifEmpty { it.episodeName },
                 )
             }
+            val pendingAdvance = pendingAutoAdvance
+                ?.takeIf {
+                    it.command == command &&
+                        currentLoadGeneration == it.committedGeneration
+                }
+            if (pendingAdvance != null) {
+                pendingAutoAdvance = null
+                advanceAutomatically(pendingAdvance.command, pendingAdvance.committedGeneration)
+            }
         }
     }
 
     private fun loadAdjacentEpisode(offset: Int) {
+        pendingAutoAdvance = null
         val command = acceptedLoadCommand ?: currentLoadCommand ?: return
         val currentIndex = episodes.indexOfFirst { it.id == command.pid }
         if (currentIndex < 0) return
         val target = episodes.getOrNull(currentIndex + offset) ?: return
         showInfoTemporarily()
         loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
+    }
+
+    private fun handlePlaybackEnded() {
+        if (mutableUiState.value.page != SessionPage.Player || pendingLoad != null) return
+        val command = currentLoadCommand ?: return
+        val committedGeneration = currentLoadGeneration ?: return
+        if (handledPlaybackEndGeneration == committedGeneration) return
+
+        handledPlaybackEndGeneration = committedGeneration
+        appendDiagnostic(DiagnosticLogEntry("PLAY", PLAYBACK_ENDED_MESSAGE))
+        if (pendingDetailsCommand == command) {
+            pendingAutoAdvance = PendingAutoAdvance(command, committedGeneration)
+            return
+        }
+        advanceAutomatically(command, committedGeneration)
+    }
+
+    private fun handlePlaybackError() {
+        if (mutableUiState.value.page != SessionPage.Player || pendingLoad != null) return
+        val committedGeneration = currentLoadGeneration ?: return
+        if (handledPlaybackErrorGeneration == committedGeneration) return
+
+        handledPlaybackErrorGeneration = committedGeneration
+        appendDiagnostic(DiagnosticLogEntry("ERR", PLAYER_ERROR_MESSAGE))
+    }
+
+    private fun advanceAutomatically(
+        command: ControlCommand.LoadVideo,
+        committedGeneration: Long,
+    ) {
+        if (
+            mutableUiState.value.page != SessionPage.Player ||
+            pendingLoad != null ||
+            currentLoadCommand != command ||
+            currentLoadGeneration != committedGeneration
+        ) {
+            return
+        }
+        val currentIndex = episodes.indexOfFirst { it.id == command.pid }
+        if (currentIndex < 0) {
+            appendDiagnostic(DiagnosticLogEntry("SKIP", EPISODE_LIST_UNAVAILABLE_MESSAGE))
+            return
+        }
+        val nextEpisode = episodes.getOrNull(currentIndex + 1)
+        if (nextEpisode == null) {
+            appendDiagnostic(DiagnosticLogEntry("SKIP", FINAL_EPISODE_MESSAGE))
+            return
+        }
+
+        appendDiagnostic(DiagnosticLogEntry("PLAY", AUTO_NEXT_MESSAGE))
+        loadVideo(
+            command = command.copy(pid = nextEpisode.id),
+            preserveEpisodes = true,
+            automatic = true,
+        )
     }
 
     private inline fun playbackControl(action: () -> Unit) {
@@ -460,10 +566,12 @@ class SessionViewModel(
         hideInfo()
         resolutionError = null
         currentLoadCommand = null
+        currentLoadGeneration = null
         acceptedLoadCommand = null
         pendingLoad = null
         pendingDetailsCommand = null
         pendingForegroundPlayIntent = null
+        pendingAutoAdvance = null
         episodes = emptyList()
         playerController.clear()
         mutableUiState.update {
@@ -485,6 +593,7 @@ class SessionViewModel(
         pendingLoad = null
         pendingDetailsCommand = null
         pendingMediaControls = null
+        pendingAutoAdvance = null
         resolveJob?.cancel()
         resolveJob = null
         detailJob?.cancel()
@@ -539,7 +648,13 @@ class SessionViewModel(
     private data class PendingLoad(
         val command: ControlCommand.LoadVideo,
         val preserveEpisodes: Boolean,
+        val automatic: Boolean,
         val overlayRevisionAtAcceptance: Long,
+    )
+
+    private data class PendingAutoAdvance(
+        val command: ControlCommand.LoadVideo,
+        val committedGeneration: Long,
     )
 
     private enum class MediaControl {
@@ -555,5 +670,13 @@ class SessionViewModel(
         const val DIAGNOSTIC_TIMEOUT_MS = 5_000L
         const val MAX_PENDING_MEDIA_CONTROLS = 64
         const val LOAD_ERROR_MESSAGE = "视频加载失败，请重试"
+        const val PLAYBACK_ENDED_MESSAGE = "当前剧集播放结束"
+        const val AUTO_NEXT_MESSAGE = "自动播放下一集"
+        const val FINAL_EPISODE_MESSAGE = "已是最后一集"
+        const val AUTO_NEXT_ERROR_MESSAGE = "下一集加载失败"
+        const val PLAYER_ERROR_MESSAGE = "播放器播放失败"
+        const val EPISODE_LIST_UNAVAILABLE_MESSAGE = "剧集列表不可用"
+        const val SOURCE_RESOLVED_MESSAGE = "视频地址解析成功"
+        const val DETAILS_LOADED_MESSAGE = "剧集信息加载成功"
     }
 }

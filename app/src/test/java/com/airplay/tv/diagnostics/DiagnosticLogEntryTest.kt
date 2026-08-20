@@ -5,6 +5,8 @@ import com.airplay.tv.protocol.SocketConnectionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import java.time.Instant
+import java.util.TimeZone
 
 class DiagnosticLogEntryTest {
     @Test
@@ -20,22 +22,39 @@ class DiagnosticLogEntryTest {
 
     @Test
     fun loadVideoLogDoesNotExposeUrlOrMode() {
+        val timestampMillis = 1_723_469_368_000
         val log = ControlCommand.LoadVideo(
-            vid = "video-1",
-            pid = "episode-2",
-            source = "source-a",
+            vid = "https://private.example/video-1?token=secret",
+            pid = "episode-2&token=secret",
+            source = "source-a?authorization=secret",
             mode = "secret-mode",
-        ).toDiagnosticLog()
+        ).toDiagnosticLog(timestampMillis)
 
         assertEquals("CTL", log.stage)
         assertEquals("收到加载视频指令", log.message)
+        assertEquals(timestampMillis, log.timestampMillis)
         assertFalse(log.toString().contains("secret-mode"))
         assertFalse(log.toString().contains("http"))
+        assertFalse(log.toString().contains("token"))
+    }
+
+    @Test
+    fun formatsTimestampInDeviceLocalTimeUsingRequestedZone() {
+        val timestampMillis = Instant.parse("2026-08-12T13:36:08Z").toEpochMilli()
+
+        assertEquals(
+            "21:36:08",
+            formatDiagnosticTime(timestampMillis, TimeZone.getTimeZone("Asia/Shanghai")),
+        )
     }
 
     @Test
     fun connectionLogsUseShortFixedText() {
-        assertEquals("已连接", SocketConnectionState.Connected.toDiagnosticLog().message)
+        val timestampMillis = 1_723_469_368_000
+        val connected = SocketConnectionState.Connected.toDiagnosticLog(timestampMillis)
+
+        assertEquals("已连接", connected.message)
+        assertEquals(timestampMillis, connected.timestampMillis)
         assertEquals("重连中", SocketConnectionState.Reconnecting.toDiagnosticLog().message)
     }
 

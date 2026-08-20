@@ -103,7 +103,7 @@ fun PairingScreen(
                 PairingStep(index = "02", text = "扫描左侧二维码进入投屏页")
                 PairingStep(index = "03", text = "选择视频并发送到电视")
                 Text(
-                    text = "房间号：${state.roomId}",
+                    text = "房间号：${middleEllipsizeRoomId(state.roomId)}",
                     modifier = Modifier
                         .padding(top = 20.dp)
                         .testTag("pairing-room-id"),
