@@ -1,6 +1,6 @@
 package com.airplay.tv.feature.history
 
-interface PlaybackProgressRepository {
+interface PlaybackProgressRepository : AutoCloseable {
     suspend fun find(source: String, vid: String, pid: String): PlaybackRecord?
 
     suspend fun latest(): PlaybackRecord?

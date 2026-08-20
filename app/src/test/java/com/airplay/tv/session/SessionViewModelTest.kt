@@ -332,6 +332,8 @@ class SessionViewModelTest {
             playerController.setState(PlayerState(isPlaying = false))
             runCurrent()
             val currentRequestId = socket.playbackHistorySendAttempts.last().requestId
+            repository.drain()
+            assertEquals("p2", repository.latest()!!.pid)
 
             socket.emitPlaybackHistoryAck(
                 PlaybackHistoryAck(oldRequestId, accepted = false, recipientCount = 0),
@@ -344,9 +346,6 @@ class SessionViewModelTest {
             runCurrent()
             assertEquals(PlaybackSyncStatus.Synced, viewModel.uiState.value.syncStatus)
 
-            advanceTimeBy(1_000)
-            runCurrent()
-            repository.drain()
             assertEquals("p2", repository.latest()!!.pid)
             assertEquals(22_000, repository.latest()!!.positionMs)
         }
@@ -1091,6 +1090,16 @@ class SessionViewModelTest {
 
     @Test
     fun failedReplacementRestartsProgressJobsForCommittedPlayingMedia() = runTest(dispatcher) {
+        api.detailResponse = {
+            ApiResponse(
+                code = 200,
+                data = VideoDetailDto(
+                    name = "Series title",
+                    thumb = "https://images.example/series.jpg",
+                    links = listOf(VideoLinkDto(id = "p1", name = "Episode 1")),
+                ),
+            )
+        }
         startCollectors()
         socket.emit(load("series", "p1", source = "source-a"))
         advanceUntilIdle()
@@ -1115,19 +1124,29 @@ class SessionViewModelTest {
         advanceTimeBy(1)
         runCurrent()
         repository.drain()
-        assertEquals(listOf("p1"), repository.saveAttempts.map { it.pid })
+        val localRecord = repository.saveAttempts.single()
 
         advanceTimeBy(24_999)
         runCurrent()
         assertTrue(socket.playbackHistorySendAttempts.isEmpty())
         advanceTimeBy(1)
         runCurrent()
-        assertEquals(
-            listOf("p1"),
-            socket.playbackHistorySendAttempts.map { it.record.pid },
-        )
+        val remoteRecord = socket.playbackHistorySendAttempts.single().record
         playerController.setState(PlayerState(isPlaying = false))
         runCurrent()
+
+        assertEquals("source-a", localRecord.source)
+        assertEquals("series", localRecord.vid)
+        assertEquals("p1", localRecord.pid)
+        assertEquals("Series title", localRecord.title)
+        assertEquals("Episode 1", localRecord.episodeName)
+        assertEquals("https://images.example/series.jpg", localRecord.thumb)
+        assertEquals("source-a", remoteRecord.source)
+        assertEquals("series", remoteRecord.vid)
+        assertEquals("p1", remoteRecord.pid)
+        assertEquals("Series title", remoteRecord.title)
+        assertEquals("Episode 1", remoteRecord.episodeName)
+        assertEquals("https://images.example/series.jpg", remoteRecord.thumb)
     }
 
     @Test
@@ -2047,7 +2066,7 @@ class SessionViewModelTest {
             completion.await()
         }
 
-        fun close() {
+        override fun close() {
             persistenceScope.cancel()
         }
 

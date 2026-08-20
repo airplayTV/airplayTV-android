@@ -168,5 +168,7 @@ class MainActivityLifecycleTest {
         override fun enqueueSave(record: PlaybackRecord) = Unit
 
         override suspend fun drain() = Unit
+
+        override fun close() = Unit
     }
 }

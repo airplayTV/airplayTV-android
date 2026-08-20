@@ -12,24 +12,54 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class DataStorePlaybackProgressRepository(
     private val dataStore: DataStore<Preferences>,
     private val gson: Gson = Gson(),
-    persistenceScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    persistenceScope: CoroutineScope? = null,
 ) : PlaybackProgressRepository {
+    private val ownsPersistenceScope = persistenceScope == null
+    private val persistenceScope = persistenceScope
+        ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val saveQueue = Channel<SaveQueueEntry>(Channel.UNLIMITED)
+    private val closed = AtomicBoolean(false)
+    private val terminalFailure = AtomicReference<Throwable?>(null)
+    private val worker = this.persistenceScope.launch {
+        for (entry in saveQueue) {
+            when (entry) {
+                is SaveQueueEntry.Save -> {
+                    if (terminalFailure.get() == null) {
+                        runCatching { saveQueued(entry.record) }
+                            .exceptionOrNull()
+                            ?.let { failure ->
+                                if (terminalFailure.compareAndSet(null, failure)) {
+                                    saveQueue.close()
+                                }
+                            }
+                    }
+                }
+                is SaveQueueEntry.Barrier -> {
+                    val failure = terminalFailure.get()
+                    if (failure == null) {
+                        entry.completion.complete(Unit)
+                    } else {
+                        entry.completion.completeExceptionally(failure)
+                    }
+                }
+            }
+        }
+    }
 
     init {
-        persistenceScope.launch {
-            for (entry in saveQueue) {
-                when (entry) {
-                    is SaveQueueEntry.Save -> runCatching { saveQueued(entry.record) }
-                    is SaveQueueEntry.Barrier -> entry.completion.complete(Unit)
-                }
+        if (ownsPersistenceScope) {
+            worker.invokeOnCompletion {
+                this.persistenceScope.cancel()
             }
         }
     }
@@ -130,16 +160,38 @@ class DataStorePlaybackProgressRepository(
     }
 
     override fun enqueueSave(record: PlaybackRecord) {
-        check(saveQueue.trySend(SaveQueueEntry.Save(record)).isSuccess) {
-            "Playback save queue is unavailable"
+        ensureAvailable()
+        if (saveQueue.trySend(SaveQueueEntry.Save(record)).isFailure) {
+            throw operationFailure()
         }
     }
 
     override suspend fun drain() {
+        ensureAvailable()
         val completion = CompletableDeferred<Unit>()
-        saveQueue.send(SaveQueueEntry.Barrier(completion))
+        if (saveQueue.trySend(SaveQueueEntry.Barrier(completion)).isFailure) {
+            throw operationFailure()
+        }
         completion.await()
     }
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            saveQueue.close()
+        }
+    }
+
+    private fun ensureAvailable() {
+        if (closed.get()) throw closedException()
+        terminalFailure.get()?.let { throw it }
+    }
+
+    private fun operationFailure(): Throwable = when {
+        closed.get() -> closedException()
+        else -> terminalFailure.get() ?: closedException()
+    }
+
+    private fun closedException() = IllegalStateException(CLOSED_MESSAGE)
 
     private suspend fun decodeOrDelete(
         key: Preferences.Key<String>,
@@ -215,6 +267,7 @@ class DataStorePlaybackProgressRepository(
     private companion object {
         const val RECORD_KEY_PREFIX = "record_"
         const val MAX_RECORDS = 500
+        const val CLOSED_MESSAGE = "Playback progress repository is closed"
         val LATEST_RECORD_KEY = stringPreferencesKey("latest_record_key")
         val CAPTURE_REVISION_KEY = longPreferencesKey("capture_revision")
     }

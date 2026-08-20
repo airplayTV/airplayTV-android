@@ -59,6 +59,7 @@ class SessionViewModel(
     private var currentLoadCommand: ControlCommand.LoadVideo? = null
     private var currentLoadGeneration: Long? = null
     private var currentPlaybackIdentity: PlaybackIdentity? = null
+    private var currentPlaybackContext: PlaybackContext? = null
     private var acceptedLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
     private var currentThumb = ""
@@ -398,23 +399,33 @@ class SessionViewModel(
                 .orEmpty()
             discardPendingMediaControls(generation)
             pendingControls.forEach(::applyMediaControl)
+            val identity = PlaybackIdentity(generation, command)
+            val previousState = mutableUiState.value
+            val context = PlaybackContext(
+                identity = identity,
+                title = resolved.title.ifEmpty { previousState.title },
+                episodeName = resolved.episodeName
+                    .ifEmpty {
+                        episodes.firstOrNull { episode -> episode.id == command.pid }
+                            ?.name
+                            .orEmpty()
+                    }
+                    .ifEmpty { previousState.episodeName },
+                thumb = currentThumb,
+                episodes = episodes.toList(),
+            )
             pendingLoad = null
             currentLoadCommand = command
             currentLoadGeneration = generation
-            currentPlaybackIdentity = PlaybackIdentity(generation, command)
+            currentPlaybackIdentity = identity
+            currentPlaybackContext = context
             acceptedLoadCommand = command
             resolutionError = null
             mutableUiState.update {
                 it.copy(
                     loading = false,
-                    title = resolved.title.ifEmpty { it.title },
-                    episodeName = resolved.episodeName
-                        .ifEmpty {
-                            episodes.firstOrNull { episode -> episode.id == command.pid }
-                                ?.name
-                                .orEmpty()
-                        }
-                        .ifEmpty { it.episodeName },
+                    title = context.title,
+                    episodeName = context.episodeName,
                     playbackUrl = resolved.url,
                     sourceName = command.source,
                     currentPid = command.pid,
@@ -456,6 +467,23 @@ class SessionViewModel(
             pendingDetailsCommand = null
             episodes = details.episodes
             currentThumb = details.thumb
+            currentPlaybackContext
+                ?.takeIf { context ->
+                    context.identity.generation == generation &&
+                        context.identity.command == command
+                }
+                ?.let { context ->
+                    currentPlaybackContext = context.copy(
+                        title = details.title.ifEmpty { context.title },
+                        episodeName = details.episodes
+                            .firstOrNull { episode -> episode.id == command.pid }
+                            ?.name
+                            .orEmpty()
+                            .ifEmpty { context.episodeName },
+                        thumb = details.thumb,
+                        episodes = details.episodes.toList(),
+                    )
+                }
             if (details.title.isNotEmpty() || details.episodes.isNotEmpty()) {
                 appendDiagnostic(DiagnosticLogEntry("API", DETAILS_LOADED_MESSAGE))
             }
@@ -663,7 +691,8 @@ class SessionViewModel(
             while (isCurrent(identity) && playerController.state.value.isPlaying) {
                 delay(REMOTE_PROGRESS_INTERVAL_MS)
                 if (!isCurrent(identity) || !playerController.state.value.isPlaying) break
-                syncSnapshot(playbackRecord(identity, playerController.state.value), identity)
+                val record = playbackRecord(identity, playerController.state.value) ?: break
+                syncSnapshot(record, identity)
             }
         }
     }
@@ -681,14 +710,16 @@ class SessionViewModel(
     private fun persistSnapshot(
         identity: PlaybackIdentity,
         playerState: PlayerState,
-    ) = playbackProgressRepository.enqueueSave(playbackRecord(identity, playerState))
+    ) {
+        playbackRecord(identity, playerState)?.let(playbackProgressRepository::enqueueSave)
+    }
 
     private fun flushCurrentPlayback(
         naturalEnd: Boolean = false,
     ) {
         val identity = currentPlaybackIdentity ?: return
         if (pendingLoad != null) return
-        val record = playbackRecord(identity, playerController.state.value, naturalEnd)
+        val record = playbackRecord(identity, playerController.state.value, naturalEnd) ?: return
         stopProgressJobs()
         playbackProgressRepository.enqueueSave(record)
         syncSnapshot(record, identity)
@@ -742,18 +773,16 @@ class SessionViewModel(
         identity: PlaybackIdentity,
         playerState: PlayerState,
         naturalEnd: Boolean = false,
-    ): PlaybackRecord {
-        val command = identity.command
+    ): PlaybackRecord? {
+        val context = currentPlaybackContext?.takeIf { it.identity == identity } ?: return null
+        val command = context.identity.command
         return PlaybackRecord(
             source = command.source,
             vid = command.vid,
             pid = command.pid,
-            title = mutableUiState.value.title,
-            episodeName = episodes.firstOrNull { it.id == command.pid }
-                ?.name
-                .orEmpty()
-                .ifEmpty { mutableUiState.value.episodeName },
-            thumb = currentThumb,
+            title = context.title,
+            episodeName = context.episodeName,
+            thumb = context.thumb,
             positionMs = playerState.positionMs.coerceAtLeast(0L),
             durationMs = playerState.durationMs.coerceAtLeast(0L),
             completed = isPlaybackCompleted(
@@ -779,6 +808,7 @@ class SessionViewModel(
         currentLoadCommand = null
         currentLoadGeneration = null
         currentPlaybackIdentity = null
+        currentPlaybackContext = null
         acceptedLoadCommand = null
         pendingLoad = null
         pendingDetailsCommand = null
@@ -874,6 +904,14 @@ class SessionViewModel(
     private data class PlaybackIdentity(
         val generation: Long,
         val command: ControlCommand.LoadVideo,
+    )
+
+    private data class PlaybackContext(
+        val identity: PlaybackIdentity,
+        val title: String,
+        val episodeName: String,
+        val thumb: String,
+        val episodes: List<Episode>,
     )
 
     private data class PendingSync(
