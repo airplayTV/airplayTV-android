@@ -36,12 +36,18 @@ class DataStorePlaybackProgressRepository(
         val recordKey = stringPreferencesKey(recordKeyName)
         val json = gson.toJson(record)
         dataStore.edit { preferences ->
-            preferences[recordKey] = json
-
+            val existingRecord = decodeOrRemove(preferences, recordKey)
             val currentLatestKeyName = preferences[LATEST_RECORD_KEY]
-            val currentLatest = currentLatestKeyName?.let { keyName ->
-                decodeOrRemove(preferences, stringPreferencesKey(keyName))
+            val currentLatest = when (currentLatestKeyName) {
+                null -> null
+                recordKeyName -> existingRecord
+                else -> decodeOrRemove(preferences, stringPreferencesKey(currentLatestKeyName))
             }
+            if (existingRecord != null && record.updatedAtMs < existingRecord.updatedAtMs) {
+                return@edit
+            }
+
+            preferences[recordKey] = json
             val finalLatestKeyName = if (
                 currentLatest == null || record.updatedAtMs >= currentLatest.updatedAtMs
             ) {

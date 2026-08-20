@@ -22,6 +22,16 @@ class PlaybackRecordTest {
     }
 
     @Test
+    fun completionPercentageDoesNotOverflowAtLongMaxValue() {
+        val durationMs = Long.MAX_VALUE
+        val ninetyFivePercentMs = durationMs - durationMs / 20
+
+        assertTrue(isPlaybackCompleted(durationMs - 30_001, durationMs, false))
+        assertTrue(isPlaybackCompleted(ninetyFivePercentMs, durationMs, false))
+        assertFalse(isPlaybackCompleted(ninetyFivePercentMs - 1, durationMs, false))
+    }
+
+    @Test
     fun resumePositionIsZeroForCompletedAndClampedForIncomplete() {
         assertEquals(0L, record(positionMs = 80_000, completed = true).resumePositionMs())
         assertEquals(0L, record(positionMs = -1, completed = false).resumePositionMs())
@@ -35,7 +45,17 @@ class PlaybackRecordTest {
         assertTrue(key.startsWith("record_"))
         assertEquals(71, key.length)
         assertEquals(key, playbackRecordKey("source", "vid", "pid"))
+        assertNotEquals(key, playbackRecordKey("other", "vid", "pid"))
+        assertNotEquals(key, playbackRecordKey("source", "other", "pid"))
         assertNotEquals(key, playbackRecordKey("source", "vid", "other"))
+    }
+
+    @Test
+    fun playbackRecordKeyLengthPrefixesAvoidComponentAmbiguity() {
+        assertNotEquals(
+            playbackRecordKey("ab", "c", "pid"),
+            playbackRecordKey("a", "bc", "pid"),
+        )
     }
 
     private fun record(

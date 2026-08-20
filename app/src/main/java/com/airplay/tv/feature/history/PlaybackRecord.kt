@@ -49,12 +49,13 @@ internal fun isPlaybackCompleted(
     if (naturalEnd) return true
     if (durationMs <= 0) return false
     val position = positionMs.coerceIn(0L, durationMs)
+    val percentageThreshold = durationMs - durationMs / COMPLETION_FRACTION_DENOMINATOR
     return durationMs - position <= COMPLETION_REMAINING_MS ||
-        position * 100 >= durationMs * COMPLETION_PERCENT
+        position >= percentageThreshold
 }
 
 private const val RECORD_KEY_PREFIX = "record_"
 private const val SHA_256_HEX_LENGTH = 64
 private const val HEX_DIGITS = "0123456789abcdef"
 private const val COMPLETION_REMAINING_MS = 30_000L
-private const val COMPLETION_PERCENT = 95L
+private const val COMPLETION_FRACTION_DENOMINATOR = 20L

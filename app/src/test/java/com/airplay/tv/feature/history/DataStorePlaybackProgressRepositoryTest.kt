@@ -54,6 +54,19 @@ class DataStorePlaybackProgressRepositoryTest {
     }
 
     @Test
+    fun olderSaveForSameKeyDoesNotOverwriteRecordOrLatest() = runTest {
+        val repository = repository(backgroundScope)
+        val newer = record(pid = "same", updatedAtMs = 20).copy(positionMs = 20_000)
+        val older = record(pid = "same", updatedAtMs = 19).copy(positionMs = 19_000)
+        repository.save(newer)
+
+        repository.save(older)
+
+        assertEquals(newer, repository.find("source", "vid", "same"))
+        assertEquals(newer, repository.latest())
+    }
+
+    @Test
     fun storeKeepsNewestFiveHundred() = runTest {
         val repository = repository(backgroundScope)
         repeat(501) { repository.save(record(pid = "p$it", updatedAtMs = it.toLong())) }
