@@ -2,6 +2,7 @@ package com.airplay.tv.protocol
 
 import com.airplay.tv.core.config.AppConfig
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
 import kotlin.random.Random
@@ -169,10 +170,7 @@ class OkHttpSocketClient internal constructor(
                         ) {
                             OpenResult.Stale
                         } else if (sent) {
-                            reconnectAttempt = 0
-                            connection.phase = ConnectionPhase.Connected
-                            updateState(SocketConnectionState.Connected)
-                            OpenResult.Connected
+                            OpenResult.JoinSent
                         } else {
                             OpenResult.SendFailed
                         }
@@ -184,19 +182,43 @@ class OkHttpSocketClient internal constructor(
                         webSocket.cancel()
                         handleDisconnect(connection, webSocket, disconnected)
                     }
-                    OpenResult.Connected -> Unit
+                    OpenResult.JoinSent -> Unit
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val isCurrent = synchronized(lock) {
-                    isCurrent(connection) &&
-                        connection.webSocket === webSocket &&
-                        connection.phase == ConnectionPhase.Connected
+                val phase = synchronized(lock) {
+                    if (isCurrent(connection) && connection.webSocket === webSocket) {
+                        connection.phase
+                    } else {
+                        null
+                    }
                 }
-                if (!isCurrent) {
+                if (phase == null) {
                     return
                 }
+                if (phase == ConnectionPhase.Connecting) {
+                    when (parseJoinAck(text, connection.roomId)) {
+                        JoinAck.Accepted -> synchronized(lock) {
+                            if (
+                                isCurrent(connection) &&
+                                connection.webSocket === webSocket &&
+                                connection.phase == ConnectionPhase.Connecting
+                            ) {
+                                reconnectAttempt = 0
+                                connection.phase = ConnectionPhase.Connected
+                                updateState(SocketConnectionState.Connected)
+                            }
+                        }
+                        JoinAck.Rejected -> {
+                            webSocket.close(NORMAL_CLOSURE_CODE, JOIN_REJECTED_REASON)
+                            handleDisconnect(connection, webSocket, disconnected)
+                        }
+                        JoinAck.NotJoinAck -> Unit
+                    }
+                    return
+                }
+                if (phase != ConnectionPhase.Connected) return
                 val ack = PlaybackHistoryProtocol.parseAck(text)
                 if (ack != null) {
                     synchronized(lock) {
@@ -318,18 +340,50 @@ class OkHttpSocketClient internal constructor(
         }.toString()
     }
 
+    private fun parseJoinAck(text: String, roomId: String): JoinAck {
+        return try {
+            val root = JsonParser.parseString(text).takeIf { it.isJsonObject }?.asJsonObject
+                ?: return JoinAck.NotJoinAck
+            if (root.get("event")?.takeIf { it.isJsonPrimitive }?.asString != "join-group") {
+                return JoinAck.NotJoinAck
+            }
+            val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: return JoinAck.Rejected
+            val codeValue = data.get("code")?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive
+                ?.takeIf { it.isNumber }?.asBigDecimal ?: return JoinAck.Rejected
+            val code = try {
+                codeValue.intValueExact()
+            } catch (_: ArithmeticException) {
+                return JoinAck.Rejected
+            }
+            val ackRoom = data.get("group")?.takeIf { it.isJsonPrimitive }?.asString
+            if (ackRoom != null && ackRoom != roomId) return JoinAck.Rejected
+            if (code == JOIN_ACCEPTED_CODE) JoinAck.Accepted else JoinAck.Rejected
+        } catch (_: RuntimeException) {
+            JoinAck.NotJoinAck
+        }
+    }
+
     private companion object {
         const val ACK_BUFFER_CAPACITY = 64
         const val COMMAND_BUFFER_CAPACITY = 64
         const val NORMAL_CLOSURE_CODE = 1000
         const val NORMAL_CLOSURE_REASON = "client closed"
+        const val JOIN_ACCEPTED_CODE = 200
+        const val JOIN_REJECTED_REASON = "join rejected"
         val LOGGER: Logger = Logger.getLogger(OkHttpSocketClient::class.java.name)
     }
 
     private enum class OpenResult {
         Stale,
         SendFailed,
-        Connected,
+        JoinSent,
+    }
+
+    private enum class JoinAck {
+        Accepted,
+        Rejected,
+        NotJoinAck,
     }
 
     private class ConnectionContext(

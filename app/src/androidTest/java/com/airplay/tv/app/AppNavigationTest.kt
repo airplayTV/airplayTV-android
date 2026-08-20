@@ -294,6 +294,29 @@ class AppNavigationTest {
     }
 
     @Test
+    fun visibleInfoShowsUnfocusedEpisodePanelWithoutFocusHighlight() {
+        composeRule.setContent {
+            AppNavigation(
+                state = SessionUiState(
+                    roomId = "room-1",
+                    page = SessionPage.Player,
+                    infoVisible = true,
+                    episodes = listOf(Episode("p1", "Episode 1"), Episode("p2", "Episode 2")),
+                    currentPid = "p1",
+                    episodePanelFocused = false,
+                    focusedEpisodeIndex = 0,
+                ),
+                player = player,
+                onBack = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("episode-panel").assertIsDisplayed()
+        composeRule.onNodeWithTag("episode-focus-p1").assertDoesNotExist()
+        composeRule.onNodeWithTag("episode-focus-p2").assertDoesNotExist()
+    }
+
+    @Test
     fun playerSourceAndDiagnosticStayBelowProgressAtBottomRight() {
         composeRule.setContent {
             AppNavigation(
@@ -302,6 +325,7 @@ class AppNavigationTest {
                     page = SessionPage.Player,
                     infoVisible = true,
                     sourceName = "ffzy",
+                    diagnosticLogs = listOf(DiagnosticLogEntry("SYNC", "已同步")),
                     durationMs = 30_000,
                 ),
                 player = player,
@@ -310,6 +334,9 @@ class AppNavigationTest {
         }
 
         composeRule.onNodeWithText("源 ffzy").assertIsDisplayed()
+        composeRule.onNodeWithTag("player-diagnostic-row").assertIsDisplayed()
+        composeRule.onNodeWithTag("player-source").assertIsDisplayed()
+        composeRule.onNodeWithTag("diagnostic-log-overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("diagnostic-overlay-container").assertIsDisplayed()
         assertRightAligned("diagnostic-overlay-container")
         assertNoOverlap(

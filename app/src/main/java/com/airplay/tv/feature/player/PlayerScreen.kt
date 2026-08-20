@@ -47,6 +47,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.airplay.tv.diagnostics.DiagnosticLogOverlay
+import com.airplay.tv.diagnostics.DiagnosticLogEntry
 import com.airplay.tv.session.SessionUiState
 import java.util.Locale
 
@@ -101,7 +102,7 @@ fun PlayerScreen(
             )
         }
 
-        if (state.episodePanelFocused && state.episodes.size > 1) {
+        if (shouldShowEpisodePanel(state)) {
             EpisodePanel(
                 state = state,
                 modifier = Modifier
@@ -138,6 +139,23 @@ internal fun playerConnectionStatusTopPadding(qrVisible: Boolean) =
 internal fun shouldShowPlayerDiagnostics(state: SessionUiState): Boolean =
     state.infoVisible && (state.sourceName.isNotBlank() || state.diagnosticLogs.isNotEmpty())
 
+internal fun shouldShowEpisodePanel(state: SessionUiState): Boolean =
+    state.infoVisible && state.episodes.size > 1
+
+internal fun isEpisodeFocused(state: SessionUiState, episodeId: String): Boolean =
+    state.episodePanelFocused &&
+        state.episodes.getOrNull(state.focusedEpisodeIndex)?.id == episodeId
+
+internal data class PlayerDiagnosticRowContent(
+    val sourceLabel: String,
+    val logs: List<DiagnosticLogEntry>,
+)
+
+internal fun playerDiagnosticRowContent(state: SessionUiState) = PlayerDiagnosticRowContent(
+    sourceLabel = "源 ${state.sourceName.ifBlank { "--" }}",
+    logs = state.diagnosticLogs,
+)
+
 internal const val PLAYER_INFO_LAYER_Z_INDEX = 1f
 internal const val PLAYER_DIAGNOSTIC_LAYER_Z_INDEX = 2f
 
@@ -146,17 +164,20 @@ private fun PlayerDiagnosticOverlay(
     state: SessionUiState,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    val content = playerDiagnosticRowContent(state)
+    Row(
         modifier = modifier
-            .widthIn(max = 560.dp)
-            .fillMaxWidth(),
-        horizontalAlignment = Alignment.End,
+            .widthIn(max = 760.dp)
+            .testTag("player-diagnostic-row"),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.Bottom,
     ) {
         Text(
-            text = "源 ${state.sourceName.ifBlank { "--" }}",
+            text = content.sourceLabel,
             modifier = Modifier
                 .background(Color(0xD90B111A), MaterialTheme.shapes.medium)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .testTag("player-source"),
             color = Color(0xFFD6DEE8),
             fontFamily = FontFamily.Monospace,
             fontSize = 13.sp,
@@ -164,10 +185,10 @@ private fun PlayerDiagnosticOverlay(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (state.diagnosticLogs.isNotEmpty()) {
+        if (content.logs.isNotEmpty()) {
             DiagnosticLogOverlay(
-                logs = state.diagnosticLogs,
-                modifier = Modifier.padding(top = 6.dp),
+                logs = content.logs,
+                modifier = Modifier.padding(start = 6.dp),
             )
         }
     }
@@ -203,7 +224,7 @@ private fun EpisodeRow(
     state: SessionUiState,
     episode: Episode,
 ) {
-    val focused = state.episodes.getOrNull(state.focusedEpisodeIndex)?.id == episode.id
+    val focused = isEpisodeFocused(state, episode.id)
     val current = state.currentPid == episode.id
     Box(
         modifier = Modifier

@@ -71,6 +71,7 @@ class OkHttpSocketClientTest {
                         val json = JsonParser.parseString(text).asJsonObject
                         assertEquals(expectedJoin(roomId), json)
                         receivedJoin.countDown()
+                        webSocket.send(joinAck(code = 200, roomId = roomId))
                         webSocket.send(controlMessage("/unknown", roomId))
                         webSocket.send(controlMessage("/ctl_play", roomId))
                     }
@@ -92,6 +93,49 @@ class OkHttpSocketClientTest {
     }
 
     @Test
+    fun openSocketRemainsConnectingUntilSuccessfulJoinAck() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        val command = async(start = CoroutineStart.UNDISPATCHED) { socketClient.commands.first() }
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+
+        connection.open()
+        connection.message(controlMessage("/ctl_play", "room-1"))
+
+        assertEquals(SocketConnectionState.Connecting, socketClient.states.value)
+        assertFalse(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
+        assertFalse(command.isCompleted)
+
+        connection.message(joinAck(code = 200, roomId = "room-1"))
+        connection.message(controlMessage("/ctl_pause", "room-1"))
+
+        assertEquals(SocketConnectionState.Connected, socketClient.states.value)
+        assertTrue(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
+        assertEquals(ControlCommand.Pause, command.await().command)
+    }
+
+    @Test
+    fun rejectedJoinAckClosesSocketAndUsesReconnectBackoff() = runTest {
+        val connector = RecordingWebSocketConnector()
+        val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
+        socketClient.connect("room-1")
+        val connection = connector.connections.single()
+        connection.open()
+
+        connection.message(joinAck(code = 409, roomId = "room-1"))
+
+        assertEquals(SocketConnectionState.Reconnecting, socketClient.states.value)
+        assertEquals(listOf(1000), connection.webSocket.closeCodes)
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(1, connector.connections.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, connector.connections.size)
+    }
+
+    @Test
     fun emittedCommandCarriesTheCurrentConnectionGeneration() = runTest {
         val connector = RecordingWebSocketConnector()
         val socketClient = createClient(connector, StandardTestDispatcher(testScheduler))
@@ -100,6 +144,7 @@ class OkHttpSocketClientTest {
         socketClient.connect("room-1")
         val connection = connector.connections.single()
         connection.open()
+        connection.acceptJoin("room-1")
         connection.message(controlMessage("/ctl_play", "room-1"))
 
         assertEquals(
@@ -135,6 +180,7 @@ class OkHttpSocketClientTest {
         socketClient.connect("room-1")
         val connection = connector.connections.single()
         connection.open()
+        connection.acceptJoin("room-1")
 
         assertTrue(socketClient.sendPlaybackHistory(playbackHistoryMessage()))
 
@@ -155,6 +201,7 @@ class OkHttpSocketClientTest {
         socketClient.connect("room-1")
         val connection = connector.connections.single()
         connection.open()
+        connection.acceptJoin("room-1")
 
         connection.message(
             """{"event":"tv-playback-history-ack","data":{"request_id":"request-1","accepted":true,"recipient_count":2}}""",
@@ -176,6 +223,7 @@ class OkHttpSocketClientTest {
         socketClient.connect("room-1")
         val connection = connector.connections.single()
         connection.open()
+        connection.acceptJoin("room-1")
 
         listOf("\"2\"", "true", "null", "1.5", "-1", "2147483648").forEach {
             connection.message(
@@ -217,7 +265,7 @@ class OkHttpSocketClientTest {
     }
 
     @Test
-    fun synchronousOpenBeforeConnectorReturnsJoinsAndConnects() {
+    fun synchronousOpenBeforeConnectorReturnsJoinsAndWaitsForAck() {
         val connector = RecordingWebSocketConnector(openBeforeReturn = true)
         val socketClient = createClient(connector, StandardTestDispatcher())
 
@@ -226,6 +274,8 @@ class OkHttpSocketClientTest {
         val webSocket = connector.connections.single().webSocket
         assertEquals(listOf(expectedJoin("room-1").toString()), webSocket.sentTexts)
         assertTrue(webSocket.closeCodes.isEmpty())
+        assertEquals(SocketConnectionState.Connecting, socketClient.states.value)
+        connector.connections.single().acceptJoin("room-1")
         assertEquals(SocketConnectionState.Connected, socketClient.states.value)
     }
 
@@ -259,6 +309,7 @@ class OkHttpSocketClientTest {
         assertFalse(command.isCompleted)
 
         newConnection.open()
+        newConnection.acceptJoin("new-room")
         newConnection.message("""{"event":"/ctl_pause","group":"new-room"}""")
         assertEquals(ControlCommand.Pause, command.await().command)
     }
@@ -354,6 +405,7 @@ class OkHttpSocketClientTest {
         }
 
         connector.connections.last().open()
+        connector.connections.last().acceptJoin("room-1")
         connector.connections.last().fail()
         advanceTimeBy(999)
         runCurrent()
@@ -396,6 +448,7 @@ class OkHttpSocketClientTest {
         assertEquals(4, connector.connections.size)
 
         connector.connections[3].open()
+        connector.connections[3].acceptJoin("room-1")
         assertEquals(SocketConnectionState.Connected, socketClient.states.value)
         connector.connections[3].fail()
         advanceTimeBy(999)
@@ -421,6 +474,7 @@ class OkHttpSocketClientTest {
         socketClient.connect("room-1")
         val connection = connector.connections.single()
         connection.open()
+        connection.acceptJoin("room-1")
         connection.message(controlMessage("/ctl_play", "room-1"))
 
         repeat(65) { index ->
@@ -544,7 +598,9 @@ class OkHttpSocketClientTest {
         server.enqueue(
             MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
-                    override fun onMessage(webSocket: WebSocket, text: String) = Unit
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        webSocket.send(joinAck(code = 200, roomId = "room-1"))
+                    }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                         closeCode.set(code)
@@ -647,6 +703,10 @@ class OkHttpSocketClientTest {
             listener.onMessage(webSocket, text)
         }
 
+        fun acceptJoin(roomId: String) {
+            message(joinAck(code = 200, roomId = roomId))
+        }
+
         fun fail() {
             listener.onFailure(webSocket, IOException("test failure"), null)
         }
@@ -735,5 +795,17 @@ class OkHttpSocketClientTest {
                     JsonObject().apply { addProperty("group", roomId) },
                 )
             }
+
+        fun joinAck(code: Int, roomId: String): String =
+            JsonObject().apply {
+                addProperty("event", "join-group")
+                add(
+                    "data",
+                    JsonObject().apply {
+                        addProperty("code", code)
+                        addProperty("group", roomId)
+                    },
+                )
+            }.toString()
     }
 }

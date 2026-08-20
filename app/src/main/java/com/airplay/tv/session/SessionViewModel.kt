@@ -168,9 +168,11 @@ class SessionViewModel(
                     return@collect
                 }
                 val command = received.command
+                val firstAssociation =
+                    command == ControlCommand.ControllerPaired && !controllerAssociationLogged
                 val shouldAppendDiagnostic = when (command) {
                     ControlCommand.HistoryIgnored -> false
-                    ControlCommand.ControllerPaired -> !controllerAssociationLogged
+                    ControlCommand.ControllerPaired -> firstAssociation
                     else -> true
                 }
                 if (shouldAppendDiagnostic) {
@@ -180,6 +182,9 @@ class SessionViewModel(
                     controllerAssociationLogged = true
                 }
                 handleCommand(command)
+                if (firstAssociation) {
+                    pushLatestPlaybackOnAssociation(received.generation)
+                }
             }
         }
         socketClient.connect(roomId)
@@ -902,6 +907,34 @@ class SessionViewModel(
                     mutableUiState.update { it.copy(syncStatus = PlaybackSyncStatus.Failed) }
                 }
             }
+        }
+    }
+
+    private fun pushLatestPlaybackOnAssociation(connectionGeneration: Long) {
+        val identity = currentPlaybackIdentity?.takeIf(::isCurrent)
+        if (identity != null) {
+            val record = playbackRecord(identity, playerController.state.value) ?: return
+            playbackProgressRepository.enqueueSave(record)
+            syncSnapshot(record, identity)
+            return
+        }
+
+        viewModelScope.launch {
+            val record = playbackProgressRepository.latest() ?: return@launch
+            if (
+                cleared ||
+                !controllerAssociationLogged ||
+                connectionGeneration != socketClient.connectionGeneration.value
+            ) {
+                return@launch
+            }
+            socketClient.sendPlaybackHistory(
+                PlaybackHistoryMessage(
+                    requestId = requestIdFactory(),
+                    group = mutableUiState.value.roomId,
+                    record = record,
+                ),
+            )
         }
     }
 

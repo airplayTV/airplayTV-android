@@ -114,6 +114,87 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun firstControllerPairPushesFreshCurrentPlaybackOnce() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        socket.playbackHistorySendAttempts.clear()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 37_000, durationMs = 100_000),
+        )
+        runCurrent()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+
+        val sent = socket.playbackHistorySendAttempts.single().record
+        assertEquals("source-a", sent.source)
+        assertEquals("series", sent.vid)
+        assertEquals("p1", sent.pid)
+        assertEquals(37_000, sent.positionMs)
+        assertEquals(100_000, sent.durationMs)
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+    }
+
+    @Test
+    fun firstControllerPairWithoutCommittedMediaPushesRepositoryLatestOnce() =
+        runTest(dispatcher) {
+            repository.seed(
+                record(
+                    source = "source-a",
+                    vid = "previous-series",
+                    pid = "p7",
+                    positionMs = 73_000,
+                ),
+            )
+            startCollectors()
+
+            socket.emit(ControlCommand.ControllerPaired)
+            socket.emit(ControlCommand.ControllerPaired)
+            runCurrent()
+
+            val sent = socket.playbackHistorySendAttempts.single().record
+            assertEquals("previous-series", sent.vid)
+            assertEquals("p7", sent.pid)
+            assertEquals(73_000, sent.positionMs)
+        }
+
+    @Test
+    fun zeroRecipientPairAckDoesNotStopThirtySecondPlaybackSync() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("series", "p1", source = "source-a"))
+        advanceUntilIdle()
+        socket.playbackHistorySendAttempts.clear()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 21_000, durationMs = 100_000),
+        )
+        runCurrent()
+
+        socket.emit(ControlCommand.ControllerPaired)
+        runCurrent()
+        val associationPush = socket.playbackHistorySendAttempts.single()
+        socket.emitPlaybackHistoryAck(
+            PlaybackHistoryAck(
+                associationPush.requestId,
+                accepted = true,
+                recipientCount = 0,
+            ),
+        )
+        runCurrent()
+        assertEquals(PlaybackSyncStatus.Synced, viewModel.uiState.value.syncStatus)
+
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        assertEquals(2, socket.playbackHistorySendAttempts.size)
+        assertEquals(21_000, socket.playbackHistorySendAttempts.last().record.positionMs)
+        playerController.setState(PlayerState(isPlaying = false))
+        runCurrent()
+    }
+
+    @Test
     fun playingPersistsEveryFiveSecondsAndSendsFirstRemoteSnapshotAtThirtySeconds() =
         runTest(dispatcher) {
             api.detailResponse = {
@@ -193,7 +274,7 @@ class SessionViewModelTest {
             socket.emit(ControlCommand.ControllerPaired)
             socket.emit(ControlCommand.ControllerPaired)
             runCurrent()
-            assertEquals(historyCount, socket.playbackHistorySendAttempts.size)
+            assertEquals(historyCount + 1, socket.playbackHistorySendAttempts.size)
         }
 
     @Test
