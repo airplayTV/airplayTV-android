@@ -15,6 +15,8 @@ import com.airplay.tv.feature.player.VideoApi
 import com.airplay.tv.feature.player.VideoDetailDto
 import com.airplay.tv.feature.player.VideoResolver
 import com.airplay.tv.feature.player.VideoSourceDto
+import com.airplay.tv.protocol.PlaybackHistoryAck
+import com.airplay.tv.protocol.PlaybackHistoryMessage
 import com.airplay.tv.protocol.ReceivedControlCommand
 import com.airplay.tv.protocol.SocketClient
 import com.airplay.tv.protocol.SocketConnectionState
@@ -83,9 +85,12 @@ class MainActivityLifecycleTest {
         override val states: StateFlow<SocketConnectionState> = mutableStates
         override val connectionGeneration: StateFlow<Long> = MutableStateFlow(0L)
         override val commands: Flow<ReceivedControlCommand> = emptyFlow()
+        override val playbackHistoryAcks: Flow<PlaybackHistoryAck> = emptyFlow()
         var closeCalls = 0
 
         override fun connect(roomId: String) = Unit
+
+        override fun sendPlaybackHistory(message: PlaybackHistoryMessage): Boolean = false
 
         override fun close() {
             closeCalls += 1
