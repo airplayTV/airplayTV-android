@@ -1,6 +1,7 @@
 package com.airplay.tv.feature.player
 
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import java.lang.reflect.Proxy
@@ -10,6 +11,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Media3PlaybackLogicTest {
+    @Test
+    fun loadAppliesInitialPositionBeforePrepare() {
+        val calls = mutableListOf<String>()
+
+        loadPlayer(recordingPlayer(calls = calls), mediaItem(), 42_000L)
+
+        assertEquals(listOf("setMediaItem", "seekTo:42000", "prepare", "play"), calls)
+    }
+
+    @Test
+    fun zeroInitialPositionDoesNotIssueSeek() {
+        val calls = mutableListOf<String>()
+
+        loadPlayer(recordingPlayer(calls = calls), mediaItem(), 0L)
+
+        assertEquals(listOf("setMediaItem", "prepare", "play"), calls)
+    }
+
+    @Test
+    fun bufferingPlaybackStateIsMarkedAsBuffering() {
+        assertTrue(isBufferingPlaybackState(Player.STATE_BUFFERING))
+        assertFalse(isBufferingPlaybackState(Player.STATE_READY))
+    }
+
+    @Test
+    fun fakePlayerRecordsInitialLoadPosition() {
+        val player = FakePlayerController()
+
+        player.load("https://cdn.example/episode.m3u8", ResolvedMediaType.HLS, 42_000L)
+
+        assertEquals(listOf(42_000L), player.loadedStartPositions)
+    }
+
     @Test
     fun retryPreservesCurrentPlaybackIntent() {
         val foregroundCalls = mutableListOf<String>()
@@ -112,13 +146,18 @@ class Media3PlaybackLogicTest {
     }
 }
 
-private fun recordingPlayer(playWhenReady: Boolean, calls: MutableList<String>): Player =
+private fun recordingPlayer(
+    playWhenReady: Boolean = false,
+    calls: MutableList<String>,
+): Player =
     Proxy.newProxyInstance(
         Player::class.java.classLoader,
         arrayOf(Player::class.java),
     ) { proxy, method, arguments ->
         when (method.name) {
             "getPlayWhenReady" -> playWhenReady
+            "setMediaItem" -> calls += "setMediaItem"
+            "seekTo" -> calls += "seekTo:${arguments?.firstOrNull()}"
             "prepare" -> calls += "prepare"
             "play" -> calls += "play"
             "pause" -> calls += "pause"
@@ -135,3 +174,5 @@ private fun recordingPlayer(playWhenReady: Boolean, calls: MutableList<String>):
             }
         }
     } as Player
+
+private fun mediaItem(): MediaItem = MediaItem.EMPTY

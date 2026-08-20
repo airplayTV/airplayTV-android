@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 
 data class PlayerState(
     val isPlaying: Boolean = false,
+    val isBuffering: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val error: String? = null,
@@ -21,7 +22,11 @@ interface PlayerController {
     val events: Flow<PlaybackEvent>
     val player: Player
 
-    fun load(url: String, mediaType: ResolvedMediaType)
+    fun load(
+        url: String,
+        mediaType: ResolvedMediaType,
+        startPositionMs: Long = 0L,
+    )
 
     fun play()
 

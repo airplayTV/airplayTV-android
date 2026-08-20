@@ -66,6 +66,9 @@ class Media3PlayerController(context: Context) : PlayerController {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            mutableState.value = mutableState.value.copy(
+                isBuffering = isBufferingPlaybackState(playbackState),
+            )
             publishPlaybackState()
             if (playbackState == Player.STATE_ENDED && playbackEndGate.tryAcquire()) {
                 mutableEvents.tryEmit(PlaybackEvent.Ended)
@@ -92,16 +95,18 @@ class Media3PlayerController(context: Context) : PlayerController {
     }
 
     @MainThread
-    override fun load(url: String, mediaType: ResolvedMediaType) {
+    override fun load(
+        url: String,
+        mediaType: ResolvedMediaType,
+        startPositionMs: Long,
+    ) {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
         playbackEndGate.reset()
         lifecycle.onLoad()
         mutableState.value = PlayerState()
-        player.setMediaItem(buildMediaItem(url, mediaType))
-        player.prepare()
-        player.play()
+        loadPlayer(player, buildMediaItem(url, mediaType), startPositionMs)
     }
 
     @MainThread
@@ -224,6 +229,16 @@ internal fun buildMediaItem(url: String, mediaType: ResolvedMediaType): MediaIte
         .setUri(url)
         .apply { mediaType.media3MimeType()?.let(::setMimeType) }
         .build()
+
+internal fun loadPlayer(player: Player, mediaItem: MediaItem, startPositionMs: Long) {
+    player.setMediaItem(mediaItem)
+    if (startPositionMs > 0L) player.seekTo(startPositionMs)
+    player.prepare()
+    player.play()
+}
+
+internal fun isBufferingPlaybackState(playbackState: Int): Boolean =
+    playbackState == Player.STATE_BUFFERING
 
 internal fun ResolvedMediaType.media3MimeType(): String? = when (this) {
     ResolvedMediaType.HLS -> MimeTypes.APPLICATION_M3U8

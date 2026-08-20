@@ -20,6 +20,7 @@ data class VideoSourceDto(
 data class VideoDetailDto(
     @SerializedName("id") val id: String? = null,
     @SerializedName("name") val name: String? = null,
+    @SerializedName("thumb") val thumb: String? = null,
     @SerializedName("links") val links: List<VideoLinkDto> = emptyList(),
 )
 
@@ -51,5 +52,6 @@ data class Episode(
 
 data class VideoDetails(
     val title: String = "",
+    val thumb: String = "",
     val episodes: List<Episode> = emptyList(),
 )

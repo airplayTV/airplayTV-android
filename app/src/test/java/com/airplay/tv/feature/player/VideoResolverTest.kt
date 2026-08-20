@@ -241,6 +241,22 @@ class VideoResolverTest {
     }
 
     @Test
+    fun detailMapsThumbWithoutFetchingIt() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"code":200,"msg":"ok","data":{"id":"v1","name":"Example","thumb":"https://img.test/a.jpg","links":[]}}""",
+            ),
+        )
+
+        val details = resolver.loadDetails(loadCommand)
+        val request = server.takeRequest()
+
+        assertEquals("/api/video/detail?id=v1&_source=s1", request.path)
+        assertEquals("https://img.test/a.jpg", details.thumb)
+        assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+    }
+
+    @Test
     fun returnsNoEpisodesWhenDetailRequestFails() = runTest {
         server.enqueue(MockResponse().setBody("""{"code":500,"msg":"unavailable","data":null}"""))
 

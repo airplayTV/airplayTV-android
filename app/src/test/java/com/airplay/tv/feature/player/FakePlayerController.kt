@@ -20,6 +20,7 @@ class FakePlayerController(
     val calls = mutableListOf<String>()
     val loadedUrls = mutableListOf<String>()
     val loadedMediaTypes = mutableListOf<ResolvedMediaType>()
+    val loadedStartPositions = mutableListOf<Long>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
     var loadedUrl: String? = null
@@ -47,10 +48,11 @@ class FakePlayerController(
         check(mutableEvents.tryEmit(PlaybackEvent.Error))
     }
 
-    override fun load(url: String, mediaType: ResolvedMediaType) {
+    override fun load(url: String, mediaType: ResolvedMediaType, startPositionMs: Long) {
         calls += "load:$url"
         loadedUrls += url
         loadedMediaTypes += mediaType
+        loadedStartPositions += startPositionMs
         loadedUrl = url
     }
 

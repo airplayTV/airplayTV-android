@@ -54,6 +54,7 @@ class VideoResolver(
         } else {
             VideoDetails(
                 title = response.data?.name?.trim().orEmpty(),
+                thumb = response.data?.thumb?.trim().orEmpty(),
                 episodes = response.data?.links.orEmpty()
                     .mapNotNull { link ->
                         val id = link.id?.trim().orEmpty()
