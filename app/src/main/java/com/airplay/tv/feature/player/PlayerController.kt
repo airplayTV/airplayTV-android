@@ -33,6 +33,8 @@ interface PlayerController {
 
     fun pause()
 
+    fun currentPositionMs(): Long
+
     fun seekBy(deltaMs: Long)
 
     fun adjustVolume(direction: Int)

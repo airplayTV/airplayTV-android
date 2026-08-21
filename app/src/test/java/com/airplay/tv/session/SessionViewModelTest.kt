@@ -878,6 +878,108 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun firstPlayAfterForegroundReloadsStandbyPlaybackAtCapturedPosition() =
+        runTest(dispatcher) {
+            var sourceAttempts = 0
+            api.sourceResponse = { _, _ ->
+                sourceAttempts += 1
+                if (sourceAttempts == 2) delay(1_000)
+                successfulSource("https://cdn/video-p1-$sourceAttempts.m3u8")
+            }
+            startCollectors()
+            socket.emit(load("video", "p1"))
+            advanceUntilIdle()
+            playerController.setState(
+                PlayerState(isPlaying = true, positionMs = 41_000, durationMs = 100_000),
+            )
+            playerController.immediatePositionMs = 41_437
+            runCurrent()
+
+            viewModel.onForegroundChanged(false)
+            viewModel.onForegroundChanged(true)
+            playerController.clearCalls()
+
+            viewModel.onRemoteControl(RemoteControlAction.TogglePlayPause)
+            runCurrent()
+
+            assertTrue(viewModel.uiState.value.loading)
+            assertEquals(2, sourceAttempts)
+            assertTrue(playerController.calls.isEmpty())
+
+            advanceTimeBy(1_000)
+            runCurrent()
+
+            assertFalse(viewModel.uiState.value.loading)
+            assertEquals(
+                listOf("load:https://cdn/video-p1-2.m3u8"),
+                playerController.calls,
+            )
+            assertEquals(41_437L, playerController.loadedStartPositions.last())
+
+            playerController.setState(PlayerState(positionMs = 41_437, durationMs = 100_000))
+            runCurrent()
+        }
+
+    @Test
+    fun normalForegroundPlayDoesNotReloadCurrentVideo() = runTest(dispatcher) {
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.clearCalls()
+
+        viewModel.onRemoteControl(RemoteControlAction.Play)
+
+        assertEquals(listOf("play"), playerController.calls)
+        assertEquals(1, api.sourceCalls.size)
+    }
+
+    @Test
+    fun failedStandbyRecoveryCanRetryWithLoadingFeedback() = runTest(dispatcher) {
+        var sourceAttempts = 0
+        api.sourceResponse = { _, _ ->
+            sourceAttempts += 1
+            when (sourceAttempts) {
+                2 -> throw IllegalStateException("expired source")
+                3 -> {
+                    delay(1_000)
+                    successfulSource("https://cdn/video-p1-refreshed.m3u8")
+                }
+                else -> successfulSource("https://cdn/video-p1-initial.m3u8")
+            }
+        }
+        startCollectors()
+        socket.emit(load("video", "p1"))
+        advanceUntilIdle()
+        playerController.setState(
+            PlayerState(isPlaying = true, positionMs = 28_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(false)
+        playerController.setState(
+            PlayerState(isPlaying = false, positionMs = 28_000, durationMs = 100_000),
+        )
+        runCurrent()
+        viewModel.onForegroundChanged(true)
+
+        viewModel.onRemoteControl(RemoteControlAction.Play)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.loading)
+        assertEquals("视频加载失败，请重试", viewModel.uiState.value.error)
+
+        viewModel.onRemoteControl(RemoteControlAction.Play)
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.loading)
+        assertNull(viewModel.uiState.value.error)
+
+        advanceUntilIdle()
+
+        assertEquals("https://cdn/video-p1-refreshed.m3u8", playerController.loadedUrl)
+        assertEquals(28_000L, playerController.loadedStartPositions.last())
+    }
+
+    @Test
     fun explicitBackgroundPlayRunsOnlyAfterForeground() = runTest(dispatcher) {
         startCollectors()
         socket.emit(load("video", "p1"))
@@ -890,8 +992,9 @@ class SessionViewModelTest {
         assertTrue(playerController.calls.isEmpty())
 
         viewModel.onForegroundChanged(true)
+        advanceUntilIdle()
 
-        assertEquals(listOf("play"), playerController.calls)
+        assertEquals(listOf("load:https://cdn/video-p1.m3u8"), playerController.calls)
     }
 
     @Test
@@ -2179,6 +2282,7 @@ class SessionViewModelTest {
         playerController.setState(
             PlayerState(
                 isPlaying = true,
+                isBuffering = true,
                 positionMs = 12_000,
                 durationMs = 30_000,
                 error = "播放失败，请稍后重试",
@@ -2188,6 +2292,7 @@ class SessionViewModelTest {
 
         assertEquals(SocketConnectionState.Connected, viewModel.uiState.value.connection)
         assertTrue(viewModel.uiState.value.isPlaying)
+        assertTrue(viewModel.uiState.value.isBuffering)
         assertEquals(12_000, viewModel.uiState.value.positionMs)
         assertEquals(30_000, viewModel.uiState.value.durationMs)
         assertEquals("播放失败，请稍后重试", viewModel.uiState.value.error)

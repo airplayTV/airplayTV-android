@@ -26,6 +26,7 @@ data class SessionUiState(
     val episodeName: String = "",
     val infoVisible: Boolean = false,
     val isPlaying: Boolean = false,
+    val isBuffering: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val sourceName: String = "",

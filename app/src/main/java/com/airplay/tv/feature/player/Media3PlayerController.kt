@@ -119,6 +119,12 @@ class Media3PlayerController(context: Context) : PlayerController {
     }
 
     @MainThread
+    override fun currentPositionMs(): Long {
+        checkUsable()
+        return player.currentPosition.coerceAtLeast(0L)
+    }
+
+    @MainThread
     override fun seekBy(deltaMs: Long) {
         checkUsable()
         val targetMs = calculateSeekTarget(

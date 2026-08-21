@@ -24,6 +24,7 @@ class FakePlayerController(
     val loadedMediaTokens = mutableListOf<Long>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
+    var immediatePositionMs: Long? = null
     var loadedUrl: String? = null
         private set
 
@@ -70,6 +71,8 @@ class FakePlayerController(
     override fun pause() {
         calls += "pause"
     }
+
+    override fun currentPositionMs(): Long = immediatePositionMs ?: mutableState.value.positionMs
 
     override fun seekBy(deltaMs: Long) {
         calls += "seek:$deltaMs"

@@ -127,7 +127,7 @@ fun PlayerScreen(
 }
 
 internal fun shouldShowLoadingOverlay(state: SessionUiState): Boolean =
-    state.loading && state.error == null
+    (state.loading || state.isBuffering) && state.error == null
 
 internal fun shouldShowPlaybackInfo(state: SessionUiState): Boolean =
     state.infoVisible

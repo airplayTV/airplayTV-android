@@ -73,6 +73,7 @@ class SessionViewModel(
     private var resolutionError: String? = null
     private var isForeground = false
     private var pendingForegroundPlayIntent: Boolean? = null
+    private var pendingStandbyRecovery: StandbyRecovery? = null
     private var controllerAssociationLogged = false
     private var controllerAssociationRevision = 0L
     private var historySyncGeneration: Long? = null
@@ -125,6 +126,7 @@ class SessionViewModel(
                 mutableUiState.update {
                     it.copy(
                         isPlaying = playerState.isPlaying,
+                        isBuffering = playerState.isBuffering,
                         positionMs = playerState.positionMs,
                         durationMs = playerState.durationMs,
                         error = resolutionError ?: playerState.error,
@@ -225,6 +227,18 @@ class SessionViewModel(
         if (cleared || this.isForeground == isForeground) return
         this.isForeground = isForeground
         if (!isForeground) {
+            pendingStandbyRecovery = if (
+                pendingLoad == null && mutableUiState.value.page == SessionPage.Player
+            ) {
+                currentLoadCommand?.let { command ->
+                    StandbyRecovery(
+                        command = command,
+                        positionMs = playerController.currentPositionMs(),
+                    )
+                }
+            } else {
+                null
+            }
             updateWakeState(active = false)
             flushCurrentPlayback()
             stopProgressJobs()
@@ -254,8 +268,7 @@ class SessionViewModel(
             val playIntent = pendingForegroundPlayIntent
             pendingForegroundPlayIntent = null
             if (playIntent == true) {
-                playerController.play()
-                showInfoTemporarily()
+                handleMediaControl(MediaControl.Play)
             }
         }
     }
@@ -321,8 +334,11 @@ class SessionViewModel(
         preserveEpisodes: Boolean = false,
         automatic: Boolean = false,
         flushPrevious: Boolean = true,
+        standbyRecovery: StandbyRecovery? = null,
     ) {
         val enteringPlayerPage = mutableUiState.value.page != SessionPage.Player
+        pendingStandbyRecovery = null
+        resolutionError = null
         if (!automatic) pendingAutoAdvance = null
         if (flushPrevious) flushCurrentPlayback()
         stopProgressJobs()
@@ -342,6 +358,7 @@ class SessionViewModel(
             preserveEpisodes = preserveEpisodes,
             automatic = automatic,
             overlayRevisionAtAcceptance = overlayRevision,
+            standbyRecovery = standbyRecovery,
         )
         mutableUiState.update {
             it.copy(
@@ -363,7 +380,7 @@ class SessionViewModel(
                 }.coerceAtLeast(0),
                 syncStatus = PlaybackSyncStatus.Idle,
                 qrVisible = false,
-                error = it.error,
+                error = null,
             )
         }
 
@@ -392,6 +409,7 @@ class SessionViewModel(
                 if (generation == loadGeneration && isForeground && pendingLoad === load) {
                     discardPendingMediaControls(generation)
                     pendingLoad = null
+                    pendingStandbyRecovery = load.standbyRecovery
                     rollbackAcceptedCursor(load)
                     if (load.automatic) {
                         appendDiagnostic(DiagnosticLogEntry("ERR", AUTO_NEXT_ERROR_MESSAGE))
@@ -413,7 +431,7 @@ class SessionViewModel(
             }
 
             appendDiagnostic(DiagnosticLogEntry("API", SOURCE_RESOLVED_MESSAGE))
-            val resumePositionMs = try {
+            val resumePositionMs = load.standbyRecovery?.positionMs ?: try {
                 playbackProgressRepository.find(command.source, command.vid, command.pid)
                     ?.resumePositionMs()
                     ?: 0L
@@ -646,6 +664,10 @@ class SessionViewModel(
             showInfoTemporarily()
             return true
         }
+        if (control == MediaControl.Play && recoverPlaybackAfterStandby()) {
+            showInfoTemporarily()
+            return true
+        }
         applyMediaControl(control)
         showInfoTemporarily()
         return true
@@ -715,10 +737,10 @@ class SessionViewModel(
                 when (action) {
                     RemoteControlAction.Play -> MediaControl.Play
                     RemoteControlAction.Pause -> MediaControl.Pause
-                    RemoteControlAction.TogglePlayPause -> if (mutableUiState.value.isPlaying) {
-                        MediaControl.Pause
-                    } else {
-                        MediaControl.Play
+                    RemoteControlAction.TogglePlayPause -> when {
+                        pendingStandbyRecovery != null -> MediaControl.Play
+                        mutableUiState.value.isPlaying -> MediaControl.Pause
+                        else -> MediaControl.Play
                     }
                     RemoteControlAction.Forward -> MediaControl.Forward
                     RemoteControlAction.Back -> MediaControl.Back
@@ -746,6 +768,18 @@ class SessionViewModel(
                 }.coerceAtLeast(0),
             )
         }
+        return true
+    }
+
+    private fun recoverPlaybackAfterStandby(): Boolean {
+        val recovery = pendingStandbyRecovery ?: return false
+        pendingStandbyRecovery = null
+        loadVideo(
+            command = recovery.command,
+            preserveEpisodes = true,
+            flushPrevious = false,
+            standbyRecovery = recovery,
+        )
         return true
     }
 
@@ -1069,6 +1103,7 @@ class SessionViewModel(
         pendingLoad = null
         pendingDetailsCommand = null
         pendingForegroundPlayIntent = null
+        pendingStandbyRecovery = null
         pendingAutoAdvance = null
         episodes = emptyList()
         currentThumb = ""
@@ -1099,6 +1134,7 @@ class SessionViewModel(
         pendingDetailsCommand = null
         pendingMediaControls = null
         pendingAutoAdvance = null
+        pendingStandbyRecovery = null
         resolveJob?.cancel()
         resolveJob = null
         detailJob?.cancel()
@@ -1156,6 +1192,12 @@ class SessionViewModel(
         val preserveEpisodes: Boolean,
         val automatic: Boolean,
         val overlayRevisionAtAcceptance: Long,
+        val standbyRecovery: StandbyRecovery?,
+    )
+
+    private data class StandbyRecovery(
+        val command: ControlCommand.LoadVideo,
+        val positionMs: Long,
     )
 
     private data class PlaybackIdentity(

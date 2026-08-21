@@ -13,8 +13,10 @@ class PlayerScreenLogicTest {
         val base = SessionUiState(roomId = "room-1")
 
         assertTrue(shouldShowLoadingOverlay(base.copy(loading = true)))
+        assertTrue(shouldShowLoadingOverlay(base.copy(isBuffering = true)))
         assertFalse(shouldShowLoadingOverlay(base.copy(loading = false)))
         assertFalse(shouldShowLoadingOverlay(base.copy(loading = true, error = "fixed")))
+        assertFalse(shouldShowLoadingOverlay(base.copy(isBuffering = true, error = "fixed")))
     }
 
     @Test

@@ -213,6 +213,8 @@ class MainActivityLifecycleTest {
             delegate.pause()
         }
 
+        override fun currentPositionMs(): Long = delegate.currentPositionMs()
+
         override fun seekBy(deltaMs: Long) = delegate.seekBy(deltaMs)
 
         override fun adjustVolume(direction: Int) = delegate.adjustVolume(direction)
