@@ -34,7 +34,7 @@ class Media3PlayerController(context: Context) : PlayerController {
         .build()
 
     private val audioManager = context.applicationContext
-        .getSystemService(AudioManager::class.java)
+        .getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val handler = Handler(Looper.getMainLooper())
     private val mutableState = MutableStateFlow(PlayerState())
     private val mutableEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)

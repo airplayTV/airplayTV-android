@@ -9,10 +9,10 @@ android {
     compileSdk = 35
     defaultConfig {
         applicationId = "com.airplay.tv"
-        minSdk = 23
+        minSdk = 21
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
@@ -45,8 +45,6 @@ dependencies {
     implementation(libs.compose.material3) 
     debugImplementation(enforcedPlatform(libs.compose.bom))
     debugImplementation(libs.compose.ui.tooling) 
-    implementation(libs.tv.foundation)
-    implementation(libs.tv.material) 
     implementation(libs.media3.exoplayer) 
     implementation(libs.media3.exoplayer.hls) 
     implementation(libs.media3.ui) 
