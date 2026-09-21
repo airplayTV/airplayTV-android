@@ -41,7 +41,9 @@ class VideoResolver(
             source = command.source,
             url = url,
             mediaType = response.data?.type.toResolvedMediaType(),
-            proxyUrl = if (response.data?.mediaKind == "live") liveProxyUrl(url) else null,
+            proxyUrl = if (response.data?.mediaKind == "live" && response.data.deliveryMode == "auto") {
+                response.data.proxyUrl?.takeIf { it == liveProxyUrl(url) }
+            } else null,
         )
     }
 

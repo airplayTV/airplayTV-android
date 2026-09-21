@@ -457,6 +457,7 @@ class SessionViewModel(
                 startPositionMs = resumePositionMs,
                 mediaToken = generation,
                 proxyUrl = resolved.proxyUrl,
+                isLive = resolved.isLive,
             )
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }

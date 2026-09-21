@@ -68,6 +68,18 @@ class VideoResolverTest {
     }
 
     @Test
+    fun onlyExplicitAutoPolicyEnablesValidatedFallback() = runTest {
+        val url = "https://api.test/api/iptv/live/cctv1.m3u8"
+        for (mode in listOf("direct", "auto", "proxy", "invalid")) {
+            server.enqueue(MockResponse().setBody("""{"code":200,"data":{"url":"$url","type":"hls","media_kind":"live","delivery_mode":"$mode","proxy_url":"$url?web=1"}}"""))
+            val result = resolver.resolve(loadCommand)
+            assertEquals(if (mode == "auto") "$url?web=1" else null, result.proxyUrl)
+        }
+        server.enqueue(MockResponse().setBody("""{"code":200,"data":{"url":"$url","type":"hls","media_kind":"live","delivery_mode":"auto","proxy_url":"https://other.test/media"}}"""))
+        assertNull(resolver.resolve(loadCommand).proxyUrl)
+    }
+
+    @Test
     fun normalizesKnownMp4AndLeavesUnknownTypeForInference() = runTest {
         server.enqueue(
             MockResponse().setBody(
@@ -247,7 +259,7 @@ class VideoResolverTest {
             server.enqueue(MockResponse().setBody("""{"code":200,"data":{"url":"$url","type":"hls","media_kind":"$kind"}}"""))
             val result = resolver.resolve(loadCommand)
             assertEquals(url, result.url)
-            assertEquals(if (kind == "live") "$url?web=1" else null, result.proxyUrl)
+            assertNull(result.proxyUrl)
         }
     }
 

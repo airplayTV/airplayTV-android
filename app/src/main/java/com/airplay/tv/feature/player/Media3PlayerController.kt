@@ -102,15 +102,16 @@ class Media3PlayerController(context: Context) : PlayerController {
         startPositionMs: Long,
         mediaToken: Long,
         proxyUrl: String?,
+        isLive: Boolean,
     ) {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
         handler.removeCallbacks(liveWatchdog)
-        liveDelivery.reset(proxyUrl, SystemClock.elapsedRealtime())
+        liveDelivery.reset(proxyUrl, SystemClock.elapsedRealtime(), isLive)
         currentMediaType = mediaType
-        liveReload = if (proxyUrl != null) {
-            { load(url, mediaType, 0L, mediaToken, proxyUrl) }
+        liveReload = if (isLive) {
+            { load(url, mediaType, 0L, mediaToken, proxyUrl, true) }
         } else null
         replacePlaybackEndListener(mediaToken)
         lifecycle.onLoad()

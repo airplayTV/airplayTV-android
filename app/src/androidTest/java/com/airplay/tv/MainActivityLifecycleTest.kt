@@ -202,6 +202,7 @@ class MainActivityLifecycleTest {
             startPositionMs: Long,
             mediaToken: Long,
             proxyUrl: String?,
+            isLive: Boolean,
         ) = delegate.load(url, mediaType, startPositionMs, mediaToken)
 
         override fun play() {

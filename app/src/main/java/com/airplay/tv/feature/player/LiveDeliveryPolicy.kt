@@ -20,9 +20,9 @@ internal class LiveDeliveryPolicy {
     var enabled = false
         private set
 
-    fun reset(url: String?, nowMs: Long) {
+    fun reset(url: String?, nowMs: Long, isLive: Boolean = url != null) {
         proxyUrl = url
-        enabled = url != null
+        enabled = isLive
         lastProgressMs = nowMs
         lastPositionMs = 0L
     }

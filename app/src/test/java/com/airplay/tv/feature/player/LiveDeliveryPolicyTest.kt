@@ -5,6 +5,15 @@ import org.junit.Test
 
 class LiveDeliveryPolicyTest {
     @Test
+    fun directOnlyLiveStillTimesOutWithoutFallback() {
+        val gate = LiveDeliveryPolicy()
+        gate.reset(null, 0, true)
+        assertTrue(gate.timedOut(20000, 0, true))
+        assertNull(gate.takeFallback(20000))
+        gate.reset(null, 21000)
+        assertFalse(gate.timedOut(50000, 0, true))
+    }
+    @Test
     fun manualReloadAfterTerminalFailureRearmsTimeoutAndFallback() {
         val gate = LiveDeliveryPolicy()
         gate.reset("proxy", 0)

@@ -57,6 +57,7 @@ class FakePlayerController(
         startPositionMs: Long,
         mediaToken: Long,
         proxyUrl: String?,
+        isLive: Boolean,
     ) {
         calls += "load:$url"
         loadedUrls += url

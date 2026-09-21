@@ -9,6 +9,8 @@ data class ApiResponse<T>(
 )
 
 data class VideoSourceDto(
+    @SerializedName("delivery_mode") val deliveryMode: String? = null,
+    @SerializedName("proxy_url") val proxyUrl: String? = null,
     @SerializedName("media_kind") val mediaKind: String? = null,
     @SerializedName("url") val url: String? = null,
     @SerializedName("type") val type: String? = null,

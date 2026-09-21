@@ -28,6 +28,7 @@ interface PlayerController {
         startPositionMs: Long = 0L,
         mediaToken: Long,
         proxyUrl: String? = null,
+        isLive: Boolean = false,
     )
 
     fun play()
