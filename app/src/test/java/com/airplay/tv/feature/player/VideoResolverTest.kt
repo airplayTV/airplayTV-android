@@ -241,6 +241,17 @@ class VideoResolverTest {
     }
 
     @Test
+    fun onlyLiveIptvGetsFallbackWithoutChangingDirectAddress() = runTest {
+        val url = "https://api.test/api/iptv/live/cctv1.m3u8"
+        for (kind in listOf("live", "video")) {
+            server.enqueue(MockResponse().setBody("""{"code":200,"data":{"url":"$url","type":"hls","media_kind":"$kind"}}"""))
+            val result = resolver.resolve(loadCommand)
+            assertEquals(url, result.url)
+            assertEquals(if (kind == "live") "$url?web=1" else null, result.proxyUrl)
+        }
+    }
+
+    @Test
     fun detailMapsThumbWithoutFetchingIt() = runTest {
         server.enqueue(
             MockResponse().setBody(

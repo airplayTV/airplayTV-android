@@ -22,6 +22,7 @@ class FakePlayerController(
     val loadedMediaTypes = mutableListOf<ResolvedMediaType>()
     val loadedStartPositions = mutableListOf<Long>()
     val loadedMediaTokens = mutableListOf<Long>()
+    val loadedProxyUrls = mutableListOf<String?>()
     val seekDeltas = mutableListOf<Long>()
     val volumeDirections = mutableListOf<Int>()
     var immediatePositionMs: Long? = null
@@ -55,17 +56,24 @@ class FakePlayerController(
         mediaType: ResolvedMediaType,
         startPositionMs: Long,
         mediaToken: Long,
+        proxyUrl: String?,
     ) {
         calls += "load:$url"
         loadedUrls += url
         loadedMediaTypes += mediaType
         loadedStartPositions += startPositionMs
         loadedMediaTokens += mediaToken
+        loadedProxyUrls += proxyUrl
         loadedUrl = url
     }
 
     override fun play() {
         calls += "play"
+    }
+
+    override fun playLive() {
+        calls += "playLive"
+        super.playLive()
     }
 
     override fun pause() {

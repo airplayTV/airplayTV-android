@@ -9,6 +9,7 @@ data class ApiResponse<T>(
 )
 
 data class VideoSourceDto(
+    @SerializedName("media_kind") val mediaKind: String? = null,
     @SerializedName("url") val url: String? = null,
     @SerializedName("type") val type: String? = null,
     @SerializedName("name") val name: String? = null,
@@ -18,6 +19,8 @@ data class VideoSourceDto(
 )
 
 data class VideoDetailDto(
+    @SerializedName("media_kind") val mediaKind: String? = null,
+    @SerializedName("channels") val channels: List<LiveChannel> = emptyList(),
     @SerializedName("id") val id: String? = null,
     @SerializedName("name") val name: String? = null,
     @SerializedName("thumb") val thumb: String? = null,
@@ -29,7 +32,15 @@ data class VideoLinkDto(
     @SerializedName("name") val name: String? = null,
 )
 
+data class LiveChannel(
+    @SerializedName("id") val id: String = "",
+    @SerializedName("name") val name: String = "",
+    @SerializedName("group") val group: String = "",
+    @SerializedName("pid") val pid: String = "",
+)
+
 data class ResolvedVideo(
+    val isLive: Boolean = false,
     val vid: String,
     val pid: String,
     val source: String,
@@ -37,6 +48,7 @@ data class ResolvedVideo(
     val mediaType: ResolvedMediaType,
     val title: String = "",
     val episodeName: String = "",
+    val proxyUrl: String? = null,
 )
 
 enum class ResolvedMediaType {
@@ -51,6 +63,8 @@ data class Episode(
 )
 
 data class VideoDetails(
+    val isLive: Boolean = false,
+    val channels: List<LiveChannel> = emptyList(),
     val title: String = "",
     val thumb: String = "",
     val episodes: List<Episode> = emptyList(),

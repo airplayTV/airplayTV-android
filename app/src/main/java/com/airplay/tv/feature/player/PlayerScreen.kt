@@ -327,23 +327,34 @@ private fun PlayerInfoOverlay(state: SessionUiState, modifier: Modifier = Modifi
                 modifier = Modifier.testTag("playback-state-icon"),
             )
             Spacer(Modifier.width(18.dp))
-            Text(
-                text = formatDuration(state.positionMs),
-                color = Color.White,
-                fontSize = 15.sp,
-            )
-            PlaybackProgress(
-                positionMs = state.positionMs,
-                durationMs = state.durationMs,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 14.dp),
-            )
-            Text(
-                text = formatDuration(state.durationMs),
-                color = Color(0xFFC5CDD8),
-                fontSize = 15.sp,
-            )
+            if (state.isLive) {
+                val channelIndex = state.episodes.indexOfFirst { it.id == state.currentPid }
+                Text(
+                    text = if (channelIndex >= 0) {
+                        "直播 · ${channelIndex + 1} / ${state.episodes.size} 台"
+                    } else "直播",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                )
+            } else {
+                Text(
+                    text = formatDuration(state.positionMs),
+                    color = Color.White,
+                    fontSize = 15.sp,
+                )
+                PlaybackProgress(
+                    positionMs = state.positionMs,
+                    durationMs = state.durationMs,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 14.dp),
+                )
+                Text(
+                    text = formatDuration(state.durationMs),
+                    color = Color(0xFFC5CDD8),
+                    fontSize = 15.sp,
+                )
+            }
         }
     }
 }

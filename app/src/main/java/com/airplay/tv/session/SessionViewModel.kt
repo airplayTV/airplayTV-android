@@ -10,6 +10,7 @@ import com.airplay.tv.feature.history.PlaybackProgressRepository
 import com.airplay.tv.feature.history.PlaybackRecord
 import com.airplay.tv.feature.history.isPlaybackCompleted
 import com.airplay.tv.feature.player.Episode
+import com.airplay.tv.feature.player.LiveChannel
 import com.airplay.tv.feature.player.PlaybackEvent
 import com.airplay.tv.feature.player.PlayerController
 import com.airplay.tv.feature.player.PlayerState
@@ -64,6 +65,8 @@ class SessionViewModel(
     private var currentPlaybackContext: PlaybackContext? = null
     private var acceptedLoadCommand: ControlCommand.LoadVideo? = null
     private var episodes: List<Episode> = emptyList()
+    private var channels: List<LiveChannel> = emptyList()
+    private var currentIsLive = false
     private var currentThumb = ""
     private var pendingSync: PendingSync? = null
     private var handledPlaybackEndGeneration: Long? = null
@@ -350,6 +353,7 @@ class SessionViewModel(
         pendingForegroundPlayIntent = null
         if (!preserveEpisodes) {
             episodes = emptyList()
+            channels = emptyList()
             currentThumb = ""
         }
         acceptedLoadCommand = command
@@ -364,7 +368,10 @@ class SessionViewModel(
             it.copy(
                 page = SessionPage.Player,
                 loading = true,
-                title = if (preserveEpisodes) it.title else "",
+                title = if (preserveEpisodes) {
+                    channels.firstOrNull { channel -> channel.id == command.vid }?.name ?: it.title
+                } else "",
+                isLive = if (preserveEpisodes) it.isLive else command.source == "电视源",
                 episodeName = if (preserveEpisodes) {
                     episodes.firstOrNull { episode -> episode.id == command.pid }?.name.orEmpty()
                 } else {
@@ -431,7 +438,7 @@ class SessionViewModel(
             }
 
             appendDiagnostic(DiagnosticLogEntry("API", SOURCE_RESOLVED_MESSAGE))
-            val resumePositionMs = load.standbyRecovery?.positionMs ?: try {
+            val resumePositionMs = if (resolved.isLive) 0L else load.standbyRecovery?.positionMs ?: try {
                 playbackProgressRepository.find(command.source, command.vid, command.pid)
                     ?.resumePositionMs()
                     ?: 0L
@@ -443,11 +450,13 @@ class SessionViewModel(
             if (generation != loadGeneration || !isForeground || pendingLoad !== load) {
                 return@launch
             }
+            currentIsLive = resolved.isLive
             playerController.load(
                 url = resolved.url,
                 mediaType = resolved.mediaType,
                 startPositionMs = resumePositionMs,
                 mediaToken = generation,
+                proxyUrl = resolved.proxyUrl,
             )
             val pendingControls = pendingMediaControls
                 ?.takeIf { it.generation == generation }
@@ -460,6 +469,7 @@ class SessionViewModel(
             val previousState = mutableUiState.value
             val context = PlaybackContext(
                 identity = identity,
+                isLive = resolved.isLive,
                 title = resolved.title.ifEmpty { previousState.title },
                 episodeName = resolved.episodeName
                     .ifEmpty {
@@ -481,6 +491,7 @@ class SessionViewModel(
             mutableUiState.update {
                 it.copy(
                     loading = false,
+                    isLive = resolved.isLive,
                     title = context.title,
                     episodeName = context.episodeName,
                     playbackUrl = resolved.url,
@@ -523,7 +534,10 @@ class SessionViewModel(
             }
 
             pendingDetailsCommand = null
-            episodes = details.episodes
+            channels = details.channels
+            episodes = if (currentIsLive || details.isLive) {
+                channels.map { Episode(it.pid, it.name) }
+            } else details.episodes
             currentThumb = details.thumb
             currentPlaybackContext
                 ?.takeIf { context ->
@@ -539,7 +553,7 @@ class SessionViewModel(
                             .orEmpty()
                             .ifEmpty { context.episodeName },
                         thumb = details.thumb,
-                        episodes = details.episodes.toList(),
+                        episodes = episodes.toList(),
                     )
                 }
             if (details.title.isNotEmpty() || details.episodes.isNotEmpty()) {
@@ -553,8 +567,8 @@ class SessionViewModel(
                         ?.name
                         .orEmpty()
                         .ifEmpty { it.episodeName },
-                    episodes = details.episodes,
-                    focusedEpisodeIndex = details.episodes.indexOfFirst { episode ->
+                    episodes = episodes,
+                    focusedEpisodeIndex = episodes.indexOfFirst { episode ->
                         episode.id == command.pid
                     }.takeIf { index -> index >= 0 } ?: it.focusedEpisodeIndex,
                 )
@@ -578,10 +592,16 @@ class SessionViewModel(
         if (currentIndex < 0) return
         val target = episodes.getOrNull(currentIndex + offset) ?: return
         showInfoTemporarily()
-        loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
+        loadVideo(channelCommand(command, target.id), preserveEpisodes = true)
+    }
+
+    private fun channelCommand(command: ControlCommand.LoadVideo, pid: String): ControlCommand.LoadVideo {
+        val channel = channels.firstOrNull { it.pid == pid }
+        return command.copy(vid = channel?.id ?: command.vid, pid = pid)
     }
 
     private fun handlePlaybackEnded(mediaToken: Long) {
+        if (currentIsLive) return
         if (mutableUiState.value.page != SessionPage.Player || pendingLoad != null) return
         val command = currentLoadCommand ?: return
         val committedGeneration = currentLoadGeneration ?: return
@@ -621,6 +641,7 @@ class SessionViewModel(
         ) {
             return
         }
+        if (currentIsLive) return
         val currentIndex = episodes.indexOfFirst { it.id == command.pid }
         if (currentIndex < 0) {
             appendDiagnostic(DiagnosticLogEntry("SKIP", EPISODE_LIST_UNAVAILABLE_MESSAGE))
@@ -675,14 +696,14 @@ class SessionViewModel(
 
     private fun applyMediaControl(control: MediaControl) {
         when (control) {
-            MediaControl.Play -> playerController.play()
+            MediaControl.Play -> if (currentIsLive) playerController.playLive() else playerController.play()
             MediaControl.Pause -> {
                 flushCurrentPlayback()
                 stopProgressJobs()
                 playerController.pause()
             }
-            MediaControl.Forward -> playerController.seekBy(SEEK_STEP_MS)
-            MediaControl.Back -> playerController.seekBy(-SEEK_STEP_MS)
+            MediaControl.Forward -> if (!currentIsLive) playerController.seekBy(SEEK_STEP_MS)
+            MediaControl.Back -> if (!currentIsLive) playerController.seekBy(-SEEK_STEP_MS)
         }
     }
 
@@ -803,7 +824,7 @@ class SessionViewModel(
             return exitEpisodes()
         }
         mutableUiState.update { it.copy(episodePanelFocused = false) }
-        loadVideo(command.copy(pid = target.id), preserveEpisodes = true)
+        loadVideo(channelCommand(command, target.id), preserveEpisodes = true)
         showInfoTemporarily()
         return true
     }
@@ -878,6 +899,7 @@ class SessionViewModel(
             (playerState.isPlaying || playerState.isBuffering)
 
     private fun startProgressJobs(identity: PlaybackIdentity) {
+        if (currentPlaybackContext?.isLive == true) return
         stopProgressJobs()
         localProgressJob = viewModelScope.launch {
             while (isCurrent(identity) && playerController.state.value.isPlaying) {
@@ -1050,6 +1072,7 @@ class SessionViewModel(
         naturalEnd: Boolean = false,
     ): PlaybackRecord? {
         val context = currentPlaybackContext?.takeIf { it.identity == identity } ?: return null
+        if (context.isLive) return null
         val command = context.identity.command
         return PlaybackRecord(
             source = command.source,
@@ -1106,6 +1129,8 @@ class SessionViewModel(
         pendingStandbyRecovery = null
         pendingAutoAdvance = null
         episodes = emptyList()
+        channels = emptyList()
+        currentIsLive = false
         currentThumb = ""
         playerController.clear()
         mutableUiState.update {
@@ -1114,6 +1139,7 @@ class SessionViewModel(
                 loading = false,
                 title = "",
                 episodeName = "",
+                isLive = false,
                 playbackUrl = "",
                 sourceName = "",
                 episodes = emptyList(),
@@ -1153,6 +1179,7 @@ class SessionViewModel(
             val committedPid = currentLoadCommand?.pid
             mutableUiState.update {
                 it.copy(
+                    title = currentPlaybackContext?.title ?: it.title,
                     episodeName = episodes.firstOrNull { episode -> episode.id == committedPid }
                         ?.name
                         .orEmpty()
@@ -1206,6 +1233,7 @@ class SessionViewModel(
     )
 
     private data class PlaybackContext(
+        val isLive: Boolean = false,
         val identity: PlaybackIdentity,
         val title: String,
         val episodeName: String,

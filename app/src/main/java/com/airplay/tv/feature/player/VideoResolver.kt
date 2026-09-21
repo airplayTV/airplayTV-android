@@ -35,11 +35,13 @@ class VideoResolver(
         }
 
         return ResolvedVideo(
+            isLive = response.data?.mediaKind == "live",
             vid = command.vid,
             pid = command.pid,
             source = command.source,
             url = url,
             mediaType = response.data?.type.toResolvedMediaType(),
+            proxyUrl = if (response.data?.mediaKind == "live") liveProxyUrl(url) else null,
         )
     }
 
@@ -53,9 +55,13 @@ class VideoResolver(
             VideoDetails()
         } else {
             VideoDetails(
+                isLive = response.data?.mediaKind == "live",
+                channels = response.data?.channels.orEmpty().filter {
+                    !it.id.isNullOrBlank() && !it.pid.isNullOrBlank() && !it.name.isNullOrBlank()
+                }.distinctBy { it.id },
                 title = response.data?.name?.trim().orEmpty(),
                 thumb = response.data?.thumb?.trim().orEmpty(),
-                episodes = response.data?.links.orEmpty()
+                episodes = response.data?.links.orEmpty().takeUnless { response.data?.mediaKind == "live" }.orEmpty()
                     .mapNotNull { link ->
                         val id = link.id?.trim().orEmpty()
                         val name = link.name?.trim().orEmpty()

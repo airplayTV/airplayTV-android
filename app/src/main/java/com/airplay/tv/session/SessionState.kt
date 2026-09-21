@@ -18,6 +18,7 @@ enum class PlaybackSyncStatus {
 
 data class SessionUiState(
     val roomId: String,
+    val isLive: Boolean = false,
     val page: SessionPage = SessionPage.Pairing,
     val connection: SocketConnectionState = SocketConnectionState.Connecting,
     val controllerConnected: Boolean = false,

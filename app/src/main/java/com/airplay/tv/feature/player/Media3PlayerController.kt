@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.MainThread
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -39,6 +40,9 @@ class Media3PlayerController(context: Context) : PlayerController {
     private val mutableState = MutableStateFlow(PlayerState())
     private val mutableEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
     private val retryGate = SingleRetryGate()
+    private val liveDelivery = LiveDeliveryPolicy()
+    private var currentMediaType = ResolvedMediaType.UNKNOWN
+    private var liveReload: (() -> Unit)? = null
     private val lifecycle = ControllerLifecycleGate()
     private val bufferingStateListener = BufferingStateListener(mutableState)
 
@@ -73,15 +77,16 @@ class Media3PlayerController(context: Context) : PlayerController {
 
         override fun onPlayerError(error: PlaybackException) {
             stopPositionUpdates()
-            if (retryGate.tryAcquire()) {
+            if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && retryGate.tryAcquire()) {
                 mutableState.value = mutableState.value.copy(error = null)
-                retryPlayer(player)
+                retryPlayer(player, error.errorCode)
+            } else if (tryLiveFallback()) {
+                // The fresh proxy playlist starts at its default live position.
+            } else if (retryGate.tryAcquire()) {
+                mutableState.value = mutableState.value.copy(error = null)
+                retryPlayer(player, error.errorCode)
             } else {
-                mutableState.value = mutableState.value.copy(
-                    isPlaying = false,
-                    error = PLAYBACK_ERROR_MESSAGE,
-                )
-                mutableEvents.tryEmit(PlaybackEvent.Error)
+                reportPlaybackError()
             }
         }
     }
@@ -96,20 +101,41 @@ class Media3PlayerController(context: Context) : PlayerController {
         mediaType: ResolvedMediaType,
         startPositionMs: Long,
         mediaToken: Long,
+        proxyUrl: String?,
     ) {
         checkUsable()
         stopPositionUpdates()
         retryGate.reset()
+        handler.removeCallbacks(liveWatchdog)
+        liveDelivery.reset(proxyUrl, SystemClock.elapsedRealtime())
+        currentMediaType = mediaType
+        liveReload = if (proxyUrl != null) {
+            { load(url, mediaType, 0L, mediaToken, proxyUrl) }
+        } else null
         replacePlaybackEndListener(mediaToken)
         lifecycle.onLoad()
         mutableState.value = PlayerState()
         loadPlayer(player, buildMediaItem(url, mediaType), startPositionMs)
+        if (liveDelivery.enabled) handler.postDelayed(liveWatchdog, 1000L)
     }
 
     @MainThread
     override fun play() {
         checkUsable()
         player.play()
+    }
+
+    @MainThread
+    override fun playLive() {
+        checkUsable()
+        if (mutableState.value.error != null) {
+            liveReload?.let { reload ->
+                reload()
+                return
+            }
+        }
+        mutableState.value = mutableState.value.copy(error = null)
+        super.playLive()
     }
 
     @MainThread
@@ -170,6 +196,9 @@ class Media3PlayerController(context: Context) : PlayerController {
     override fun clear() {
         checkMainThread()
         if (!lifecycle.tryClear()) return
+        liveReload = null
+        handler.removeCallbacks(liveWatchdog)
+        liveDelivery.reset(null, SystemClock.elapsedRealtime())
         stopPositionUpdates()
         retryGate.reset()
         removePlaybackEndListener()
@@ -182,11 +211,43 @@ class Media3PlayerController(context: Context) : PlayerController {
     override fun release() {
         checkMainThread()
         if (!lifecycle.tryRelease()) return
+        liveReload = null
+        handler.removeCallbacks(liveWatchdog)
+        liveDelivery.reset(null, SystemClock.elapsedRealtime())
         stopPositionUpdates()
         removePlaybackEndListener()
         player.removeListener(listener)
         player.release()
         mutableState.value = PlayerState()
+    }
+
+    private val liveWatchdog = object : Runnable {
+        override fun run() {
+            if (lifecycle.isReleased || !liveDelivery.enabled) return
+            if (liveDelivery.timedOut(SystemClock.elapsedRealtime(), player.currentPosition, player.playWhenReady)) {
+                if (!tryLiveFallback()) {
+                    reportPlaybackError()
+                    return
+                }
+            }
+            handler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun tryLiveFallback(): Boolean {
+        val url = liveDelivery.takeFallback(SystemClock.elapsedRealtime()) ?: return false
+        mutableState.value = mutableState.value.copy(error = null, isBuffering = true)
+        loadPlayer(player, buildMediaItem(url, currentMediaType), 0L, player.playWhenReady)
+        return true
+    }
+
+    private fun reportPlaybackError() {
+        handler.removeCallbacks(liveWatchdog)
+        if (liveDelivery.enabled) player.pause()
+        liveDelivery.reset(null, SystemClock.elapsedRealtime())
+        stopPositionUpdates()
+        mutableState.value = mutableState.value.copy(isPlaying = false, isBuffering = false, error = PLAYBACK_ERROR_MESSAGE)
+        mutableEvents.tryEmit(PlaybackEvent.Error)
     }
 
     private fun checkUsable() {
@@ -248,11 +309,11 @@ internal fun buildMediaItem(url: String, mediaType: ResolvedMediaType): MediaIte
         .apply { mediaType.media3MimeType()?.let(::setMimeType) }
         .build()
 
-internal fun loadPlayer(player: Player, mediaItem: MediaItem, startPositionMs: Long) {
+internal fun loadPlayer(player: Player, mediaItem: MediaItem, startPositionMs: Long, shouldPlay: Boolean = true) {
     player.setMediaItem(mediaItem)
     if (startPositionMs > 0L) player.seekTo(startPositionMs)
     player.prepare()
-    player.play()
+    if (shouldPlay) player.play() else player.pause()
 }
 
 internal fun isBufferingPlaybackState(playbackState: Int): Boolean =
@@ -274,8 +335,11 @@ internal fun ResolvedMediaType.media3MimeType(): String? = when (this) {
     ResolvedMediaType.UNKNOWN -> null
 }
 
-internal fun retryPlayer(player: Player) {
+internal fun retryPlayer(player: Player, errorCode: Int? = null) {
     val shouldPlay = player.playWhenReady
+    if (errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+        player.seekToDefaultPosition()
+    }
     player.prepare()
     if (shouldPlay) {
         player.play()

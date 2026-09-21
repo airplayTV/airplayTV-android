@@ -80,6 +80,99 @@ class SessionViewModelTest {
         Dispatchers.resetMain()
     }
 
+    private fun configureLive() {
+        api.sourceResponse = { _, _ -> ApiResponse(200, data = com.google.gson.Gson().fromJson(
+            """{"url":"https://cdn/live.m3u8","type":"hls","media_kind":"live"}""",
+            VideoSourceDto::class.java,
+        )) }
+        api.detailResponse = { vid -> ApiResponse(200, data = com.google.gson.Gson().fromJson(
+            """{"name":"$vid","media_kind":"live","links":[{"id":"line","name":"Line"}],"channels":[{"id":"cctv1","pid":"ysp-cctv1","name":"CCTV1","group":"央视"},{"id":"cctv2","pid":"ysp-cctv2","name":"CCTV2","group":"央视"}]}""",
+            VideoDetailDto::class.java,
+        )) }
+    }
+
+    @Test
+    fun liveNeverRestoresOrSavesVodProgress() = runTest(dispatcher) {
+        configureLive()
+        repository.seed(record("电视源", "cctv1", "ysp-cctv1", 42_000))
+        startCollectors()
+        socket.emit(load("cctv1", "ysp-cctv1", "电视源"))
+        advanceUntilIdle()
+        assertEquals(0L, playerController.loadedStartPositions.single())
+        socket.emit(ControlCommand.Pause)
+        advanceUntilIdle()
+        assertTrue(repository.saveAttempts.isEmpty())
+    }
+
+    @Test
+    fun liveNextChangesChannelIdentityAndPreservesMode() = runTest(dispatcher) {
+        configureLive()
+        startCollectors()
+        socket.emit(load("cctv1", "ysp-cctv1", "电视源", "custom"))
+        advanceUntilIdle()
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+        assertEquals(SourceCall("cctv2", "ysp-cctv2", "电视源", "custom"), api.sourceCalls.last())
+        socket.emit(ControlCommand.Previous)
+        advanceUntilIdle()
+        assertEquals("cctv1", api.sourceCalls.last().vid)
+    }
+
+    @Test
+    fun liveIgnoresSeekAndEndedAndResumesAtLiveEdge() = runTest(dispatcher) {
+        configureLive()
+        startCollectors()
+        socket.emit(load("cctv1", "ysp-cctv1", "电视源"))
+        advanceUntilIdle()
+        socket.emit(ControlCommand.Forward)
+        socket.emit(ControlCommand.Back)
+        playerController.emitEnded(playerController.loadedMediaTokens.last())
+        advanceUntilIdle()
+        assertTrue(playerController.seekDeltas.isEmpty())
+        assertEquals(1, api.sourceCalls.size)
+        socket.emit(ControlCommand.Pause)
+        socket.emit(ControlCommand.Play)
+        advanceUntilIdle()
+        assertTrue(playerController.calls.contains("playLive"))
+        assertTrue(repository.saveAttempts.isEmpty())
+    }
+
+    @Test
+    fun liveRapidNextPreviousCannotCommitStaleChannel() = runTest(dispatcher) {
+        configureLive()
+        startCollectors()
+        socket.emit(load("cctv1", "ysp-cctv1", "电视源"))
+        advanceUntilIdle()
+        val pending = CompletableDeferred<Unit>()
+        val originalSource = api.sourceResponse
+        api.sourceResponse = { vid, pid ->
+            if (vid == "cctv2") withContext(NonCancellable) { pending.await() }
+            originalSource(vid, pid)
+        }
+        socket.emit(ControlCommand.Next)
+        runCurrent()
+        socket.emit(ControlCommand.Previous)
+        runCurrent()
+        pending.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("ysp-cctv1", viewModel.uiState.value.currentPid)
+        assertEquals(2, playerController.loadedUrls.size)
+    }
+
+    @Test
+    fun failedLiveChannelSwitchKeepsCommittedChannelTitle() = runTest(dispatcher) {
+        configureLive()
+        startCollectors()
+        socket.emit(load("cctv1", "ysp-cctv1", "电视源"))
+        advanceUntilIdle()
+        val originalTitle = viewModel.uiState.value.title
+        api.sourceResponse = { _, _ -> error("unavailable") }
+        socket.emit(ControlCommand.Next)
+        advanceUntilIdle()
+        assertEquals("ysp-cctv1", viewModel.uiState.value.currentPid)
+        assertEquals(originalTitle, viewModel.uiState.value.title)
+    }
+
     @Test
     fun restoresOnlyIncompletePlaybackAndPublishesEpisodeContext() = runTest(dispatcher) {
         repository.seed(record(source = "source-a", vid = "series", pid = "p1", positionMs = 42_000))

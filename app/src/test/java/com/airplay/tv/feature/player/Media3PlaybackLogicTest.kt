@@ -3,6 +3,7 @@ package com.airplay.tv.feature.player
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +13,54 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Media3PlaybackLogicTest {
+    @Test
+    fun liveProxyLoadDoesNotCarryVodPositionOrResumePausedPlayback() {
+        for (shouldPlay in listOf(true, false)) {
+            val calls = mutableListOf<String>()
+            loadPlayer(recordingPlayer(calls = calls), mediaItem(), 0L, shouldPlay)
+            assertEquals(listOf("setMediaItem", "prepare", if (shouldPlay) "play" else "pause"), calls)
+        }
+    }
+
+    @Test
+    fun pausedLiveResumeSeeksToDefaultPositionWithoutPreparingAgain() {
+        val mediaCalls = mutableListOf<String>()
+        val controller = FakePlayerController(recordingPlayer(calls = mediaCalls))
+
+        controller.playLive()
+
+        assertEquals(listOf("seekToDefaultPosition"), mediaCalls)
+        assertEquals(listOf("playLive", "play"), controller.calls)
+    }
+
+    @Test
+    fun idleLiveResumeSeeksThenPreparesBeforePlaying() {
+        val mediaCalls = mutableListOf<String>()
+        val controller = FakePlayerController(
+            recordingPlayer(calls = mediaCalls, playbackState = Player.STATE_IDLE),
+        )
+
+        controller.playLive()
+
+        assertEquals(listOf("seekToDefaultPosition", "prepare"), mediaCalls)
+        assertEquals(listOf("playLive", "play"), controller.calls)
+    }
+
+    @Test
+    fun behindLiveWindowRetrySeeksToLiveEdgeAndPreservesPlaybackIntent() {
+        for (shouldPlay in listOf(true, false)) {
+            val calls = mutableListOf<String>()
+            retryPlayer(
+                recordingPlayer(playWhenReady = shouldPlay, calls = calls),
+                errorCode = PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW,
+            )
+            assertEquals(
+                listOf("seekToDefaultPosition", "prepare", if (shouldPlay) "play" else "pause"),
+                calls,
+            )
+        }
+    }
+
     @Test
     fun loadAppliesInitialPositionBeforePrepare() {
         val calls = mutableListOf<String>()
@@ -213,6 +262,7 @@ class Media3PlaybackLogicTest {
 private fun recordingPlayer(
     playWhenReady: Boolean = false,
     calls: MutableList<String>,
+    playbackState: Int = Player.STATE_READY,
 ): Player =
     Proxy.newProxyInstance(
         Player::class.java.classLoader,
@@ -220,8 +270,10 @@ private fun recordingPlayer(
     ) { proxy, method, arguments ->
         when (method.name) {
             "getPlayWhenReady" -> playWhenReady
+            "getPlaybackState" -> playbackState
             "setMediaItem" -> calls += "setMediaItem"
             "seekTo" -> calls += "seekTo:${arguments?.firstOrNull()}"
+            "seekToDefaultPosition" -> calls += "seekToDefaultPosition"
             "prepare" -> calls += "prepare"
             "play" -> calls += "play"
             "pause" -> calls += "pause"

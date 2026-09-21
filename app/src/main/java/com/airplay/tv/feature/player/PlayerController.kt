@@ -27,9 +27,16 @@ interface PlayerController {
         mediaType: ResolvedMediaType,
         startPositionMs: Long = 0L,
         mediaToken: Long,
+        proxyUrl: String? = null,
     )
 
     fun play()
+
+    fun playLive() {
+        player.seekToDefaultPosition()
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        play()
+    }
 
     fun pause()
 
